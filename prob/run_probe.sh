@@ -52,6 +52,7 @@ GENE_LIKELIHOOD="nb"                   # nb (recommended), zinb, or normal
 BATCH_SIZE_TRAIN=128
 N_JOBS=16
 MAX_ITER=2000
+SAVE_EMBEDDINGS=""                     # set to "--save_embeddings" to also save embeddings_val.npy / labels_val.npy (needed for visualize.py)
 
 PYTHON="/lichaohan/miniconda3/envs/scvi/bin/python"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -74,4 +75,5 @@ $PYTHON probe.py \
     --gene_likelihood   "${GENE_LIKELIHOOD}" \
     --batch_size_train  "${BATCH_SIZE_TRAIN}" \
     --n_jobs            "${N_JOBS}" \
-    --max_iter          "${MAX_ITER}"
+    --max_iter          "${MAX_ITER}" \
+    ${SAVE_EMBEDDINGS}
