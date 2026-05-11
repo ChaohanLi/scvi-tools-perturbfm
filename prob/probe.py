@@ -88,6 +88,9 @@ def parse_args():
     )
     p.add_argument("--h5ad", type=str,
                    default="/lichaohan/readData/5w_allcelltype_anno_symbol.h5ad")
+    p.add_argument("--dataset_id", type=str, default="5w_symbol",
+                   help="Short dataset tag appended to run_name (e.g. 5w_symbol, "
+                        "5w_GSE196830, GSE96583, 10w_GSE196830, 20w_GSE196830)")
     p.add_argument("--train_size", type=float, default=0.8)
     p.add_argument("--seed", type=int, default=42)
     # scVI model hyperparameters
@@ -104,6 +107,16 @@ def parse_args():
                    help="Mini-batch size for scVI training")
     p.add_argument("--early_stopping", action="store_true",
                    help="Enable scVI early stopping on ELBO")
+    # Gene space selection
+    p.add_argument("--gene_space", type=str, default="ensembl",
+                   choices=["ensembl", "hgnc"],
+                   help="'ensembl': use var_names as-is; "
+                        "'hgnc': map Ensembl IDs → HGNC symbols via symbol_map, "
+                        "drop genes without a valid HGNC entry")
+    p.add_argument("--symbol_map", type=str,
+                   default="/lichaohan/readData/gene_id_to_symbol.tsv",
+                   help="TSV (gene_id \t gene_symbol) for Ensembl→HGNC mapping. "
+                        "Only used when --gene_space hgnc")
     # LinearSVC probe hyperparameters
     p.add_argument("--cv_folds", type=int, default=5)
     p.add_argument("--max_samples", type=int, default=5000)
@@ -112,7 +125,8 @@ def parse_args():
     p.add_argument("--max_iter", type=int, default=2000)
     p.add_argument("--n_jobs", type=int, default=16)
     # Output
-    p.add_argument("--output_dir", type=str, default="outputs_probe")
+    p.add_argument("--output_dir", type=str,
+                   default=os.path.join(_PROB_DIR, "outputs_probe"))
     p.add_argument("--run_name", type=str, default=None)
     p.add_argument("--save_embeddings", action="store_true")
     # Weights & Biases
@@ -277,7 +291,8 @@ def main():
 
     device   = "cuda" if torch.cuda.is_available() else "cpu"
     run_name = args.run_name or time.strftime("probe_%Y%m%d_%H%M%S")
-    out_dir  = os.path.join(_PROB_DIR, args.output_dir, run_name)
+    run_name = f"{run_name}_{args.dataset_id}_{args.gene_space}"
+    out_dir  = os.path.join(args.output_dir, run_name)
     os.makedirs(out_dir, exist_ok=True)
 
     print(f"Device: {device}")
@@ -295,6 +310,21 @@ def main():
     print(f"Loading h5ad: {args.h5ad}")
     adata = sc.read_h5ad(args.h5ad)
     print(f"  Shape: {adata.shape}  obs columns: {list(adata.obs.columns)}")
+
+    # ── HGNC gene filtering (optional) ───────────────────────────────
+    if args.gene_space == "hgnc":
+        import pandas as pd
+        sym_df = pd.read_csv(args.symbol_map, sep="\t", index_col=0)
+        # Keep only genes whose Ensembl ID has a valid HGNC symbol
+        keep_mask = np.array([g in sym_df.index for g in adata.var_names])
+        n_before = adata.n_vars
+        adata = adata[:, keep_mask].copy()
+        # Rename var_names to HGNC symbols
+        adata.var_names = pd.Index(
+            [sym_df.loc[g, "gene_symbol"] for g in adata.var_names]
+        )
+        print(f"  HGNC filter: {keep_mask.sum()}/{n_before} genes kept, "
+              f"renamed to HGNC symbols")
 
     # ── Build label encoding ──────────────────────────────────────────
     cell_types  = adata.obs["cell_type"].values

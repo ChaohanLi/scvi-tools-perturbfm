@@ -35,3 +35,9 @@ prob/outputs_probe/
 prob/wandb/
 prob/__pycache__/
 *.log
+
+# wandb local cache
+wandb/
+prob/wandb/
+prob/outputs_probe/
+prob/__pycache__/
