@@ -99,7 +99,7 @@ def _reduce_tsne(embeddings: np.ndarray, seed: int) -> np.ndarray:
     reducer = TSNE(
         n_components=2,
         perplexity=perplexity,
-        n_iter=1000,
+        max_iter=1000,
         random_state=seed,
         init="pca",
         learning_rate="auto",
@@ -300,6 +300,11 @@ def parse_args():
         "--seed", type=int, default=42,
         help="Random seed for reproducibility (default: 42)",
     )
+    p.add_argument(
+        "--n_jobs", type=int, default=1,
+        help="Number of runs to process in parallel (default: 1). "
+             "Set to -1 to use all available CPU cores.",
+    )
     return p.parse_args()
 
 
@@ -326,12 +331,35 @@ def main():
             sys.exit(1)
 
     print(f"Visualizing {len(run_dirs)} run(s) | methods={methods} | "
-          f"max_cells={args.max_cells} | seed={args.seed}\n")
+          f"max_cells={args.max_cells} | seed={args.seed} | "
+          f"n_jobs={args.n_jobs}\n")
 
-    for rd in run_dirs:
-        print(f"→ {os.path.basename(rd)}")
-        visualize_run(rd, methods, args.max_cells, args.seed)
+    total_cpus = os.cpu_count() or 1
+    n_parallel = args.n_jobs if args.n_jobs != -1 else total_cpus
+    n_parallel = max(1, min(n_parallel, len(run_dirs)))
+
+    def _do(rd, run_methods):
+        print(f"→ {os.path.basename(rd)}", flush=True)
+        visualize_run(rd, run_methods, args.max_cells, args.seed)
         print()
+
+    # ── Phase 1: UMAP — numba is fork-safe, run in parallel ─────────
+    if "umap" in methods:
+        if n_parallel > 1:
+            print(f"UMAP phase: {n_parallel} workers in parallel")
+        from joblib import Parallel, delayed
+        Parallel(n_jobs=n_parallel, backend="loky", verbose=0)(
+            delayed(_do)(rd, ["umap"]) for rd in run_dirs
+        )
+
+    # ── Phase 2: t-SNE — Barnes-Hut Cython OpenMP is NOT fork-safe;
+    #    running multiple subprocesses concurrently corrupts global state
+    #    → SIGSEGV.  Must run sequentially. ────────────────────────────
+    if "tsne" in methods:
+        if "umap" in methods:
+            print(f"\nt-SNE phase: sequential (Barnes-Hut is not multi-process safe)")
+        for rd in run_dirs:
+            _do(rd, ["tsne"])
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 program: probe.py
+project: scvi-probe
 method: grid
 metric:
   goal: maximize
@@ -11,6 +12,10 @@ parameters:
       - GSE96583
       - 10w_GSE196830
       - 20w_GSE196830
+  gene_space:
+    values:
+      - ensembl
+      - hgnc
 
 # Fixed args passed to every run.
 # ${args} expands to --dataset_id <value> for each trial.

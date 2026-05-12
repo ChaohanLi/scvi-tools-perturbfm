@@ -346,11 +346,18 @@ def save_fold_metrics(path, cv_result):
 # ---------------------------------------------------------------------------
 def main():
     args = parse_args()
-    # Auto-resolve dataset-specific fields from registry (enables wandb sweep)
+    # Auto-resolve dataset-specific fields from registry (enables wandb sweep).
+    # gene_space from registry is only used as fallback when not explicitly passed.
+    _explicit = set()
+    import sys as _sys
+    for _tok in _sys.argv[1:]:
+        if _tok.startswith("--gene_space"):
+            _explicit.add("gene_space")
     if args.dataset_id in DATASET_REGISTRY:
         cfg = DATASET_REGISTRY[args.dataset_id]
-        args.h5ad       = cfg["h5ad"]
-        args.gene_space = cfg["gene_space"]
+        args.h5ad = cfg["h5ad"]
+        if "gene_space" not in _explicit:
+            args.gene_space = cfg["gene_space"]
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     scvi.settings.seed = args.seed
