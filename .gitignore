@@ -34,10 +34,15 @@ __pycache__/
 prob/outputs_probe/
 prob/wandb/
 prob/__pycache__/
+peakvi_prob/outputs_probe/
+peakvi_prob/wandb/
+peakvi_prob/__pycache__/
 *.log
 
 # wandb local cache
 wandb/
-prob/wandb/
-prob/outputs_probe/
+
+# core dumps from training crashes (often multi-GB)
+core.*
+**/core.*
 prob/__pycache__/

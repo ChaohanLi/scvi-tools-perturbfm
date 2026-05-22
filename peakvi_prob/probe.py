@@ -1,19 +1,22 @@
 """
-Cell-type evaluation for scVI embeddings.
+Cell-type evaluation for PeakVI embeddings.
 
-Protocol (matches scFoundation / scGPT probe baselines):
+Protocol (identical to scVI / scFoundation / scGPT probe baselines):
   - Same stratified 80/20 train/val split (seed=42)
-  - Train scVI **unsupervised** on train cells only (no cell-type labels)
+  - Train PeakVI **unsupervised** on train cells only (no cell-type labels)
   - Extract latent z (give_mean=True) from val cells
   - 5-fold StratifiedKFold on val embeddings:
       each fold: StandardScaler -> optional PCA -> LinearSVC(dual=False)
   - Report mean CV train/test accuracy, macro-F1, balanced-accuracy
 
-Data note: adata.X is log1p-normalized (no raw counts available).
-  scVI uses gene_likelihood="nb" (default) for numerical stability — the NB
-  likelihood is robust even on normalized data and avoids the scale-collapse
-  instability that "normal" likelihood suffers after ~150 epochs.
-scVI reference: Lopez et al. 2018 (Nature Methods).
+Input data:
+  PeakVI operates on cell × peak binary/count accessibility matrices from
+  scATAC-seq.  Each dataset is provided as a counts parquet (cells × sites)
+  plus a site_to_gene TSV that maps site column indices to genomic coordinates
+  and gene labels.  The parquet is loaded directly as a cell × peak AnnData;
+  no gene-activity aggregation is performed (PeakVI works on raw peak space).
+
+PeakVI reference: Ashuach et al. 2022 (Nature Methods).
 """
 
 import argparse
@@ -43,72 +46,160 @@ from sklearn.svm import LinearSVC
 
 import scvi
 from lightning.pytorch.callbacks import Callback
-from scvi.model import SCVI
+from scvi.model import PEAKVI
 
 _PROB_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 # ---------------------------------------------------------------------------
-# Build AnnData from scATAC-seq parquet by aggregating sites → gene activity
+# Dataset registry
 # ---------------------------------------------------------------------------
-def parquet_to_adata(parquet_path: str, site_to_gene_path: str, label_h5ad_path: str):
-    """Aggregate 240 000 chromatin-accessibility sites into gene activity scores.
+# Each entry must have exactly one of:
+#   "h5ad"   — pre-built cell×peak AnnData (obs must contain "cell_type")
+#   "parquet" — raw accessibility parquet (cells × sites) from the readData/
+#               pipeline; requires "site_tsv" and "label_csv" companions.
+#
+# "n_class" is only used for the assertion check; it is inferred from the data
+# automatically when the --dataset_id shortcut is used.
+DATASET_REGISTRY = {
+    # ── scATAC parquet datasets (GSE196830 + GSE96583) ──────────────────
+    "5w_GSE196830_atac": {
+        "parquet":   "/lichaohan/readData/5w_PBMC_GSE196830/counts_top12k_stratified_allchr.parquet",
+        "site_tsv":  "/lichaohan/readData/site_to_gene_index_stratified_top12k_bl.tsv",
+        "label_csv": "/lichaohan/readData/5w_PBMC_GSE196830/filtered_5w_all_cells.csv",
+        "n_class":   29,
+    },
+    "10w_GSE196830_atac": {
+        "parquet":   "/lichaohan/readData/10w_PBMC_GSE196830/stratified_noncoding33_counts.parquet",
+        "site_tsv":  "/lichaohan/readData/10w_PBMC_GSE196830/site_to_gene_index_stratified_noncoding33_10w_nochr5.tsv",
+        "label_csv": "/lichaohan/readData/10w_PBMC_GSE196830/filtered_10w_all_celltype.csv",
+        "n_class":   29,
+    },
+    "20w_GSE196830_atac": {
+        "parquet":   "/lichaohan/readData/20w_PBMC_GSE196830/stratified_noncoding33_counts.parquet",
+        "site_tsv":  "/lichaohan/readData/20w_PBMC_GSE196830/site_to_gene_index_stratified_noncoding33_20w_nochr5_18.tsv",
+        "label_csv": "/lichaohan/readData/20w_PBMC_GSE196830/filtered_20w_all_celltype.csv",
+        "n_class":   29,
+    },
+    "40w_GSE196830_atac": {
+        "parquet":   "/lichaohan/readData/40w_PBMC_GSE196830/stratified_noncoding33_40w_counts.parquet",
+        "site_tsv":  "/lichaohan/readData/40w_PBMC_GSE196830/site_to_gene_index_stratified_noncoding33_40w.tsv",
+        "label_csv": "/lichaohan/readData/40w_PBMC_GSE196830/filtered_40w_all_celltype.csv",
+        "n_class":   29,
+    },
+    "80w_GSE196830_atac": {
+        "parquet":   "/lichaohan/readData/80w_PBMC_GSE196830/stratified_noncoding33_80w_counts.parquet",
+        "site_tsv":  "/lichaohan/readData/80w_PBMC_GSE196830/site_to_gene_index_stratified_noncoding33_80w.tsv",
+        "label_csv": "/lichaohan/readData/80w_PBMC_GSE196830/filtered_80w_all_celltype.csv",
+        "n_class":   29,
+    },
+    "120w_GSE196830_atac": {
+        "parquet":   "/lichaohan/readData/120w_PBMC_GSE196830/stratified_noncoding33_120w_counts.parquet",
+        "site_tsv":  "/lichaohan/readData/120w_PBMC_GSE196830/site_to_gene_index_stratified_noncoding33_120w.tsv",
+        "label_csv": "/lichaohan/readData/120w_PBMC_GSE196830/filtered_120w_all_celltype.csv",
+        "n_class":   29,
+    },
+    "GSE96583_atac": {
+        "parquet":   "/lichaohan/readData/GSE96583_PBMC/stratified_noncoding33_counts.parquet",
+        "site_tsv":  "/lichaohan/readData/GSE96583_PBMC/site_map.tsv",
+        "label_csv": "/lichaohan/readData/GSE96583_PBMC/filtered_stratified_noncoding33_celltype.csv",
+        "n_class":   8,
+    },
+}
 
-    Mapping convention: mapping TSV row i (0-based) corresponds to parquet
-    data column str(i+1).  Sites are summed per gene_index to produce raw
-    integer gene activity counts suitable for scVI (NB likelihood).
 
-    Cell-type labels are taken from label_h5ad_path (barcodes must match).
+# ---------------------------------------------------------------------------
+# Build AnnData from parquet (cell × raw-peak counts)
+# ---------------------------------------------------------------------------
+def parquet_to_adata(parquet_path: str, site_tsv_path: str, label_csv_path: str):
+    """Load cell × peak accessibility matrix directly — no gene aggregation.
+
+    Columns str(1) … str(N_sites) become peak features; rows are cells.
+    Cell-type labels are joined from label_csv on cell_barcode.
+    The resulting AnnData.X is a CSR integer matrix suitable for PeakVI.
     """
     import pandas as pd
     import scipy.sparse as sp
     import anndata as ad
-    import scanpy as sc
 
-    print(f"  Loading site-to-gene mapping: {site_to_gene_path}")
-    mapping = pd.read_csv(site_to_gene_path, sep="\t")
-    gene_indices = mapping["gene_index"].values          # (240000,) int
-    unique_gi, inv = np.unique(gene_indices, return_inverse=True)
-    n_genes = len(unique_gi)
-    gi_to_label = mapping.groupby("gene_index")["gene_label"].first()
-    gene_names = [str(gi_to_label[gi]) for gi in unique_gi]
-    print(f"  {len(mapping)} sites → {n_genes} genes")
+    print(f"  Loading site TSV: {site_tsv_path}")
+    site_df = pd.read_csv(site_tsv_path, sep="\t")
+    n_sites = len(site_df)
+    # Build human-readable peak names  "chr1:1014251"
+    if "chrom" in site_df.columns and "col_idx_0based" in site_df.columns:
+        peak_names = (
+            site_df["chrom"].astype(str)
+            + ":"
+            + site_df["col_idx_0based"].astype(str)
+        ).tolist()
+    else:
+        peak_names = [str(i) for i in range(n_sites)]
+    print(f"  {n_sites} peaks")
 
     print(f"  Loading parquet: {parquet_path}")
-    df = pd.read_parquet(parquet_path)
-    barcodes = df["cell_barcode"].values
-    data_cols = [str(i + 1) for i in range(len(mapping))]
-    df_data = df[data_cols]                              # (n_cells, 240000)
+    import pyarrow.parquet as pq
+    data_cols = [str(i + 1) for i in range(n_sites)]
+    cols_to_read = ["cell_barcode"] + data_cols
 
-    print(f"  Aggregating sites → genes (groupby sum)…")
-    # Rename columns to gene_index values, then groupby-sum on axis=1
-    df_data = df_data.copy()
-    df_data.columns = gene_indices
-    # Transpose → groupby rows → transpose back:  (240000, n_cells).groupby → (n_genes, n_cells) → (n_cells, n_genes)
-    X_gene = df_data.T.groupby(level=0).sum().T         # (n_cells, n_genes)
-    X_sparse = sp.csr_matrix(X_gene.values.astype(np.float32))
+    pf = pq.ParquetFile(parquet_path)
+    # Verify column availability (guard against mismatched site count)
+    parquet_col_set = set(pf.schema_arrow.names)
+    missing = [c for c in data_cols[:5] if c not in parquet_col_set]
+    if missing:
+        raise ValueError(
+            f"Parquet does not contain expected site columns (e.g. {missing}). "
+            f"Check that site_tsv and parquet correspond to the same dataset."
+        )
 
-    print(f"  Loading cell-type labels: {label_h5ad_path}")
-    adata_ref = sc.read_h5ad(label_h5ad_path)
-    bc_to_ct = dict(zip(adata_ref.obs_names, adata_ref.obs["cell_type"]))
+    # Chunked read: convert 2 000 rows at a time to avoid a dense
+    # n_cells × n_peaks intermediate (e.g. 200 k × 228 k × 4 B ≈ 183 GB).
+    # Each 2 000-row batch peaks at ~1.7 GB before going sparse.
+    barcodes_list: list = []
+    chunks: list = []
+    n_batches = 0
+    for batch in pf.iter_batches(batch_size=2000, columns=cols_to_read):
+        df_b = batch.to_pandas()
+        barcodes_list.append(df_b["cell_barcode"].values)
+        chunks.append(sp.csr_matrix(df_b[data_cols].values, dtype=np.float32))
+        del df_b
+        n_batches += 1
+        if n_batches % 50 == 0:
+            print(f"    … {n_batches * 2000:,} rows loaded", flush=True)
+
+    barcodes = np.concatenate(barcodes_list)
+    X = sp.vstack(chunks, format="csr")
+    del chunks, barcodes_list
+    print(f"  Parquet loaded: {X.shape[0]:,} cells × {X.shape[1]:,} peaks  "
+          f"(nnz={X.nnz:,}, density={X.nnz/X.shape[0]/X.shape[1]:.4f})")
+
+    print(f"  Loading cell-type labels: {label_csv_path}")
+    lbl_df = pd.read_csv(label_csv_path)
+    # Support both "cell_type" and "celltype" column names
+    ct_col = "cell_type" if "cell_type" in lbl_df.columns else lbl_df.columns[1]
+    bc_to_ct = dict(zip(lbl_df["cell_barcode"].values, lbl_df[ct_col].values))
     cell_types = [bc_to_ct[bc] for bc in barcodes]
 
     adata = ad.AnnData(
-        X=X_sparse,
-        obs=pd.DataFrame({"cell_type": cell_types}, index=pd.Index(barcodes, name="")),
-        var=pd.DataFrame(index=pd.Index(gene_names, name="")),
+        X=X,
+        obs=pd.DataFrame(
+            {"cell_type": cell_types},
+            index=pd.Index(barcodes, name=""),
+        ),
+        var=pd.DataFrame(index=pd.Index(peak_names, name="")),
     )
-    print(f"  AnnData built: {adata.shape}, {adata.obs['cell_type'].nunique()} cell types")
+    print(
+        f"  AnnData built: {adata.shape}, "
+        f"{adata.obs['cell_type'].nunique()} cell types"
+    )
     return adata
 
 
 # ---------------------------------------------------------------------------
-# Exact replica of the stratified split used in scFoundation / scGPT baselines
-# to guarantee the same train/val cells across all models.
+# Exact replica of the stratified split used across all probe baselines
 # ---------------------------------------------------------------------------
 def _stratified_train_val_split(
-    barcodes: np.ndarray,
-    labels: np.ndarray,
+    barcodes,
+    labels,
     train_size: float = 0.8,
     random_state: int = 42,
 ):
@@ -137,120 +228,68 @@ def _stratified_train_val_split(
 
 
 # ---------------------------------------------------------------------------
-# Dataset registry — maps dataset_id → (h5ad path, gene_space)
-# Sweep agents only need to pass --dataset_id; other dataset-specific fields
-# are resolved automatically from this table.
-# ---------------------------------------------------------------------------
-DATASET_REGISTRY = {
-    "5w_symbol":     {
-        "h5ad":       "/lichaohan/readData/5w_allcelltype_anno_symbol.h5ad",
-        "gene_space": "ensembl",
-    },
-    "5w_GSE196830":  {
-        "h5ad":       "/lichaohan/readData/5w_PBMC_GSE196830/5w_allcelltype.h5ad",
-        "gene_space": "hgnc",
-    },
-    "GSE96583":      {
-        "h5ad":       "/lichaohan/readData/GSE96583_PBMC/GSE96583_merged_dedup.h5ad",
-        "gene_space": "ensembl",   # var_names are already HGNC symbols
-    },
-    "10w_GSE196830": {
-        "h5ad":       "/lichaohan/readData/10w_PBMC_GSE196830/10w_allcelltype.h5ad",
-        "gene_space": "hgnc",
-    },
-    "20w_GSE196830": {
-        "h5ad":       "/lichaohan/readData/20w_PBMC_GSE196830/20w_allcelltype.h5ad",
-        "gene_space": "hgnc",
-    },
-    "40w_GSE196830": {
-        "h5ad":       "/lichaohan/readData/40w_PBMC_GSE196830/GSE196830_40w_subset.h5ad",
-        "gene_space": "hgnc",
-    },
-    "120w_GSE196830": {
-        "h5ad":       "/lichaohan/readData/120w_PBMC_GSE196830/GSE196830_120w_subset.h5ad",
-        "gene_space": "hgnc",
-    },
-    # scATAC-seq gene-activity baseline: 240k sites aggregated to gene counts
-    "5w_GSE196830_atac": {
-        "parquet":      "/lichaohan/readData/5w_PBMC_GSE196830/counts_top12k_stratified_allchr.parquet",
-        "site_to_gene": "/lichaohan/readData/site_to_gene_index_stratified_top12k_bl.tsv",
-        "label_h5ad":   "/lichaohan/readData/5w_PBMC_GSE196830/5w_allcelltype.h5ad",
-        # var_names are already HGNC symbols after aggregation → skip Ensembl filter
-        "gene_space":   "ensembl",
-    },
-}
-
-
-# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 def parse_args():
     p = argparse.ArgumentParser(
-        description="Train scVI and evaluate a LinearSVC probe on val embeddings"
+        description="Train PeakVI and evaluate a LinearSVC probe on val embeddings"
     )
-    p.add_argument("--h5ad", type=str,
-                   default="/lichaohan/readData/5w_allcelltype_anno_symbol.h5ad")
-    p.add_argument("--dataset_id", type=str, default="5w_symbol",
-                   help="Short dataset tag appended to run_name (e.g. 5w_symbol, "
-                        "5w_GSE196830, GSE96583, 10w_GSE196830, 20w_GSE196830, 40w_GSE196830)")
+    p.add_argument("--dataset_id", type=str, default="10w_GSE196830_atac",
+                   help="Registry key (e.g. 10w_GSE196830_atac, 20w_GSE196830_atac, "
+                        "GSE96583_atac).  Overrides --parquet / --site_tsv / --label_csv.")
+    # Manual path overrides (ignored when --dataset_id resolves from registry)
+    p.add_argument("--parquet",   type=str, default=None,
+                   help="Path to cell×site counts parquet")
+    p.add_argument("--site_tsv",  type=str, default=None,
+                   help="Path to site-to-gene mapping TSV")
+    p.add_argument("--label_csv", type=str, default=None,
+                   help="Path to cell barcode + cell_type CSV")
+    # Split / seed
     p.add_argument("--train_size", type=float, default=0.8)
-    p.add_argument("--seed", type=int, default=42)
-    # scVI model hyperparameters
-    p.add_argument("--n_latent", type=int, default=30,
-                   help="scVI latent dimension (default 30, common benchmark standard)")
-    p.add_argument("--n_hidden", type=int, default=128)
-    p.add_argument("--n_layers", type=int, default=2)
-    p.add_argument("--gene_likelihood", type=str, default="nb",
-                   choices=["nb", "zinb", "normal"],
-                   help="scVI gene likelihood (default nb; numerically stable for log1p data)")
-    p.add_argument("--max_epochs", type=int, default=500,
-                   help="scVI training epochs upper bound (default 500; early stopping "
-                        "exits early when val ELBO plateaus).")
+    p.add_argument("--seed",       type=int,   default=42)
+    # PeakVI hyperparameters
+    p.add_argument("--n_latent",   type=int,   default=20,
+                   help="PeakVI latent dimension (default 20, paper default)")
+    p.add_argument("--n_hidden",   type=int,   default=128)
+    p.add_argument("--n_layers",   type=int,   default=2)
+    p.add_argument("--max_epochs", type=int,   default=500,
+                   help="PeakVI training epochs (default 500; sufficient for convergence "
+                        "on large datasets — built-in heuristic gives only 25-50 for "
+                        "20w-40w, far from converged). Early stopping will terminate early.")
     p.add_argument("--batch_size_train", type=int, default=1024,
-                   help="Mini-batch size for scVI training (default 1024; up from "
-                        "scVI's 128 default for better GPU utilization on large "
-                        "scRNA datasets — VAE/Adam with epoch-based KL warmup is robust)")
+                   help="Mini-batch size for PeakVI training (default 1024; up from "
+                        "scvi-tools' 128 default for better GPU utilization on large "
+                        "ATAC datasets — VAE/Adam with epoch-based KL warmup is robust)")
     p.add_argument("--lr", type=float, default=None,
-                   help="Override scVI learning rate (default None → use framework "
-                        "default 1e-3, passed via plan_kwargs). Bump if you go "
-                        "beyond batch=2048.")
-    p.add_argument("--early_stopping", default=True,
+                   help="Override PeakVI learning rate (default None → use framework "
+                        "default 1e-4). Bump if you go beyond batch=2048.")
+    p.add_argument("--early_stopping",   default=True,
                    action=argparse.BooleanOptionalAction,
-                   help="Enable scVI early stopping on val ELBO (default True). "
+                   help="Enable PeakVI early stopping on val ELBO (default True). "
                         "Use --no_early_stopping to disable.")
     p.add_argument("--early_stopping_patience", type=int, default=24,
-                   help="Early-stopping patience in epochs (default 24; was 45 in "
+                   help="Early-stopping patience in epochs (default 24; was 50 in "
                         "scvi-tools default — tightened to cut wasted tail epochs).")
-    # Gene space selection
-    p.add_argument("--gene_space", type=str, default="ensembl",
-                   choices=["ensembl", "hgnc"],
-                   help="'ensembl': use var_names as-is; "
-                        "'hgnc': map Ensembl IDs → HGNC symbols via symbol_map, "
-                        "drop genes without a valid HGNC entry")
-    p.add_argument("--symbol_map", type=str,
-                   default="/lichaohan/readData/gene_id_to_symbol.tsv",
-                   help="TSV (gene_id \t gene_symbol) for Ensembl→HGNC mapping. "
-                        "Only used when --gene_space hgnc")
-    # LinearSVC probe hyperparameters
-    p.add_argument("--cv_folds", type=int, default=5)
-    p.add_argument("--max_samples", type=int, default=5000)
-    p.add_argument("--pca_dim", type=int, default=None,
-                   help="PCA before SVC. Default None = skip (n_latent=30 is already compact).")
-    p.add_argument("--max_iter", type=int, default=2000)
-    p.add_argument("--n_jobs", type=int, default=16)
+    # LinearSVC probe hyperparameters (identical to other baselines)
+    p.add_argument("--cv_folds",   type=int,   default=5)
+    p.add_argument("--max_samples", type=int,  default=5000)
+    p.add_argument("--pca_dim",    type=int,   default=None,
+                   help="PCA before SVC. Default None (n_latent=20 is already compact).")
+    p.add_argument("--max_iter",   type=int,   default=2000)
+    p.add_argument("--n_jobs",     type=int,   default=16)
     # Output
     p.add_argument("--output_dir", type=str,
                    default=os.path.join(_PROB_DIR, "outputs_probe"))
-    p.add_argument("--run_name", type=str, default=None)
+    p.add_argument("--run_name",   type=str,   default=None)
     p.add_argument("--save_embeddings", action="store_true")
     # Weights & Biases
-    p.add_argument("--wandb_project", type=str, default="scvi-probe")
-    p.add_argument("--no_wandb", action="store_true")
+    p.add_argument("--wandb_project", type=str, default="peakvi-probe")
+    p.add_argument("--no_wandb",      action="store_true")
     return p.parse_args()
 
 
 # ---------------------------------------------------------------------------
-# LinearSVC probe (identical to scFoundation / scGPT probes)
+# LinearSVC probe (identical to scVI / scFoundation / scGPT probes)
 # ---------------------------------------------------------------------------
 def build_probe(train_embeddings, args):
     steps = [("scaler", StandardScaler())]
@@ -261,8 +300,7 @@ def build_probe(train_embeddings, args):
             train_embeddings.shape[1],
         )
         if pca_dim >= 1 and pca_dim < train_embeddings.shape[1]:
-            steps.append(("pca", PCA(n_components=pca_dim,
-                                     random_state=args.seed)))
+            steps.append(("pca", PCA(n_components=pca_dim, random_state=args.seed)))
     steps.append(("svc", LinearSVC(
         random_state=args.seed,
         dual=False,
@@ -325,9 +363,7 @@ def run_svc_cv(embeddings, labels, args):
         y_test  = labels[test_idx]
 
         if args.max_samples and len(x_train) > args.max_samples:
-            sampled_idx = np.random.choice(
-                len(x_train), args.max_samples, replace=False
-            )
+            sampled_idx = np.random.choice(len(x_train), args.max_samples, replace=False)
             x_train_fit = x_train[sampled_idx]
             y_train_fit = y_train[sampled_idx]
         else:
@@ -374,7 +410,6 @@ def run_svc_cv(embeddings, labels, args):
             for key in ["accuracy", "balanced_accuracy", "macro_f1", "weighted_f1"]
         }
 
-    # Aggregate per-class metrics across folds (mean ± std)
     n_kept = len(keep_classes)
     per_class_cv = []
     for c in range(n_kept):
@@ -407,8 +442,7 @@ def run_svc_cv(embeddings, labels, args):
 # Fast single-split probe for per-epoch checkpoint selection
 # ---------------------------------------------------------------------------
 def _quick_probe_f1(z_val: np.ndarray, y_val: np.ndarray, args) -> float:
-    """Stratified 70/30 single-split macro-F1.  Runs in O(seconds) per epoch;
-    used only to decide which checkpoint has best downstream performance."""
+    """Stratified 70/30 single-split macro-F1.  O(seconds) per epoch."""
     from sklearn.model_selection import StratifiedShuffleSplit
 
     unique, counts = np.unique(y_val, return_counts=True)
@@ -421,7 +455,6 @@ def _quick_probe_f1(z_val: np.ndarray, y_val: np.ndarray, args) -> float:
         y_val = y_val[mask]
         y_val = np.searchsorted(keep, y_val)
 
-    # Cap at 6 000 to keep inference fast on large val sets
     if len(z_val) > 6000:
         rng = np.random.default_rng(args.seed)
         idx = rng.choice(len(z_val), 6000, replace=False)
@@ -460,26 +493,16 @@ def _quick_probe_f1(z_val: np.ndarray, y_val: np.ndarray, args) -> float:
 # Per-epoch probe callback (Lightning)
 # ---------------------------------------------------------------------------
 class PerEpochProbeCallback(Callback):
-    """Runs a quick downstream SVC probe after each validation epoch.
+    """Logs ELBO + quick downstream probe F1 after each validation epoch.
 
-    Reads per-epoch ELBO from Lightning callback_metrics and logs it to wandb.
-    After each validation epoch, extracts val embeddings from the scvi-tools
-    model and runs _quick_probe_f1.  If the F1 improves, saves the current
-    model state as the best-downstream checkpoint.
-
-    Attributes
-    ----------
-    best_f1 : float
-        Best quick macro-F1 seen so far.
-    best_epoch : int
-        1-based epoch at which best_f1 was achieved.
-    elbo_history : list of (epoch, elbo_train, elbo_val)
-    f1_history   : list of (epoch, quick_f1)
+    Saves model state to ``best_ckpt_dir`` whenever a new best quick-F1 is
+    achieved.  After training, load that checkpoint for the official full-CV
+    evaluation.
     """
 
     def __init__(
         self,
-        scvi_model,
+        peakvi_model,
         adata_val,
         y_val: np.ndarray,
         args,
@@ -487,7 +510,7 @@ class PerEpochProbeCallback(Callback):
         use_wandb: bool,
     ):
         super().__init__()
-        self.scvi_model    = scvi_model
+        self.peakvi_model  = peakvi_model
         self.adata_val     = adata_val
         self.y_val         = y_val
         self.args          = args
@@ -500,8 +523,7 @@ class PerEpochProbeCallback(Callback):
         self.f1_history:   list = []  # (epoch, quick_f1)
 
     def on_validation_epoch_end(self, trainer, pl_module):
-        # Lightning current_epoch is 0-based; use 1-based for human readability
-        epoch = trainer.current_epoch + 1
+        epoch = trainer.current_epoch + 1  # 1-based
 
         elbo_train = float(trainer.callback_metrics.get("elbo_train",
                                                          float("nan")))
@@ -511,15 +533,15 @@ class PerEpochProbeCallback(Callback):
 
         # _check_if_trained raises unless is_trained_ is True;
         # set it temporarily — the module weights are valid mid-training.
-        _was_trained = self.scvi_model.is_trained_
-        self.scvi_model.is_trained_ = True
+        _was_trained = self.peakvi_model.is_trained_
+        self.peakvi_model.is_trained_ = True
         try:
             with torch.no_grad():
-                z_val = self.scvi_model.get_latent_representation(
+                z_val = self.peakvi_model.get_latent_representation(
                     self.adata_val, give_mean=True
                 )
         finally:
-            self.scvi_model.is_trained_ = _was_trained
+            self.peakvi_model.is_trained_ = _was_trained
 
         f1 = _quick_probe_f1(z_val, self.y_val, self.args)
         self.f1_history.append((epoch, f1))
@@ -544,12 +566,12 @@ class PerEpochProbeCallback(Callback):
             # Force is_trained_=True before save so the serialized attr_dict
             # passes _check_if_trained on reload; restore in finally so the
             # rest of the training loop is unaffected.
-            _was_trained = self.scvi_model.is_trained_
-            self.scvi_model.is_trained_ = True
+            _was_trained = self.peakvi_model.is_trained_
+            self.peakvi_model.is_trained_ = True
             try:
-                self.scvi_model.save(self.best_ckpt_dir, overwrite=True)
+                self.peakvi_model.save(self.best_ckpt_dir, overwrite=True)
             finally:
-                self.scvi_model.is_trained_ = _was_trained
+                self.peakvi_model.is_trained_ = _was_trained
             print(
                 f"    → New best downstream F1={f1:.4f} at epoch {epoch} "
                 f"— checkpoint saved.",
@@ -583,30 +605,31 @@ def save_fold_metrics(path, cv_result):
 # ---------------------------------------------------------------------------
 def main():
     args = parse_args()
-    # Auto-resolve dataset-specific fields from registry (enables wandb sweep).
-    # gene_space from registry is only used as fallback when not explicitly passed.
-    _explicit = set()
-    import sys as _sys
-    for _tok in _sys.argv[1:]:
-        if _tok.startswith("--gene_space"):
-            _explicit.add("gene_space")
+
+    # Auto-resolve paths from registry when dataset_id is given
     if args.dataset_id in DATASET_REGISTRY:
         cfg = DATASET_REGISTRY[args.dataset_id]
-        if "h5ad" in cfg:
-            args.h5ad = cfg["h5ad"]
-        if "gene_space" not in _explicit:
-            args.gene_space = cfg["gene_space"]
+        args.parquet   = cfg["parquet"]
+        args.site_tsv  = cfg["site_tsv"]
+        args.label_csv = cfg["label_csv"]
+
+    if args.parquet is None or args.site_tsv is None or args.label_csv is None:
+        raise ValueError(
+            "Provide --dataset_id (from registry) or all of "
+            "--parquet, --site_tsv, --label_csv."
+        )
+
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     scvi.settings.seed = args.seed
 
     device   = "cuda" if torch.cuda.is_available() else "cpu"
     run_name = args.run_name or time.strftime("probe_%Y%m%d_%H%M%S")
-    run_name = f"{run_name}_{args.dataset_id}_{args.gene_space}"
+    run_name = f"{run_name}_{args.dataset_id}"
     out_dir  = os.path.join(args.output_dir, run_name)
     os.makedirs(out_dir, exist_ok=True)
 
-    print(f"Device: {device}")
+    print(f"Device:           {device}")
     print(f"Output directory: {out_dir}")
 
     # ── Weights & Biases init ─────────────────────────────────────────
@@ -618,40 +641,21 @@ def main():
         )
 
     # ── Load data ─────────────────────────────────────────────────────
-    _cfg = DATASET_REGISTRY.get(args.dataset_id, {})
-    if "parquet" in _cfg:
-        print(f"Loading from parquet (ATAC gene-activity): {_cfg['parquet']}")
-        adata = parquet_to_adata(_cfg["parquet"], _cfg["site_to_gene"], _cfg["label_h5ad"])
-    else:
-        print(f"Loading h5ad: {args.h5ad}")
-        adata = sc.read_h5ad(args.h5ad)
+    print(f"\nLoading ATAC data (cell × peak) ...")
+    adata = parquet_to_adata(args.parquet, args.site_tsv, args.label_csv)
     print(f"  Shape: {adata.shape}  obs columns: {list(adata.obs.columns)}")
 
-    # ── HGNC gene filtering (optional) ───────────────────────────────
-    if args.gene_space == "hgnc":
-        import pandas as pd
-        sym_df = pd.read_csv(args.symbol_map, sep="\t", index_col=0)
-        # Keep only genes whose Ensembl ID has a valid HGNC symbol
-        keep_mask = np.array([g in sym_df.index for g in adata.var_names])
-        n_before = adata.n_vars
-        adata = adata[:, keep_mask].copy()
-        # Rename var_names to HGNC symbols
-        adata.var_names = pd.Index(
-            [sym_df.loc[g, "gene_symbol"] for g in adata.var_names]
-        )
-        print(f"  HGNC filter: {keep_mask.sum()}/{n_before} genes kept, "
-              f"renamed to HGNC symbols")
-
     # ── Build label encoding ──────────────────────────────────────────
-    cell_types  = adata.obs["cell_type"].values
-    classes     = sorted(set(cell_types))
-    type2idx    = {c: i for i, c in enumerate(classes)}
-    labels      = np.array([type2idx[c] for c in cell_types], dtype=np.int64)
-    n_class     = len(classes)
+    cell_types = adata.obs["cell_type"].values
+    classes    = sorted(set(cell_types))
+    type2idx   = {c: i for i, c in enumerate(classes)}
+    labels     = np.array([type2idx[c] for c in cell_types], dtype=np.int64)
+    n_class    = len(classes)
+    print(f"  Classes: {n_class}")
 
-    # ── Stratified 80/20 split — identical to scFoundation/scGPT split ─
-    barcodes           = np.array(adata.obs_names)
-    train_bc, val_bc   = _stratified_train_val_split(
+    # ── Stratified 80/20 split — identical to all probe baselines ─────
+    barcodes         = np.array(adata.obs_names)
+    train_bc, val_bc = _stratified_train_val_split(
         barcodes, labels,
         train_size=args.train_size,
         random_state=args.seed,
@@ -662,30 +666,34 @@ def main():
 
     adata_train = adata[train_idx].copy()
     adata_val   = adata[val_idx].copy()
+    del adata  # free full matrix — train+val copies are sufficient; saves RAM for large datasets
     print(f"  Split: {len(train_idx)} train / {len(val_idx)} val")
-    print(f"  Classes: {n_class}")
 
-    # ── Set up scVI ───────────────────────────────────────────────────
-    # Data is log1p-normalized → use gene_likelihood="normal" (Gaussian).
-    # Training is fully unsupervised: no cell-type labels used.
+    y_val   = labels[val_idx]
+    y_train = labels[train_idx]
+    y_all   = labels   # original order preserved by train_idx/val_idx
+
+    # ── Set up PeakVI ─────────────────────────────────────────────────
     scvi.settings.num_threads = 4
-    SCVI.setup_anndata(adata_train)
+    PEAKVI.setup_anndata(adata_train)
 
-    model = SCVI(
+    model = PEAKVI(
         adata_train,
         n_latent=args.n_latent,
         n_hidden=args.n_hidden,
-        n_layers=args.n_layers,
-        gene_likelihood=args.gene_likelihood,
+        n_layers_encoder=args.n_layers,
+        n_layers_decoder=args.n_layers,
     )
-    print(f"\nscVI model: n_latent={args.n_latent}, n_hidden={args.n_hidden}, "
-          f"n_layers={args.n_layers}, gene_likelihood={args.gene_likelihood}")
+    print(
+        f"\nPeakVI model: n_latent={args.n_latent}, n_hidden={args.n_hidden}, "
+        f"n_layers={args.n_layers}"
+    )
     print(f"  Parameters: {sum(p.numel() for p in model.module.parameters()):,}")
 
     # ── Per-epoch probe callback ──────────────────────────────────────
-    best_ckpt_dir = os.path.join(out_dir, "scvi_model_best_f1")
+    best_ckpt_dir = os.path.join(out_dir, "peakvi_model_best_f1")
     probe_callback = PerEpochProbeCallback(
-        scvi_model    = model,
+        peakvi_model  = model,
         adata_val     = adata_val,
         y_val         = y_val,
         args          = args,
@@ -694,9 +702,8 @@ def main():
     )
 
     # ── Train ─────────────────────────────────────────────────────────
-    # Suppress scVI's verbose lightning output
-    scvi.settings.verbosity = 20  # WARNING level
-    print(f"\nTraining scVI (unsupervised) — max_epochs={args.max_epochs}, "
+    scvi.settings.verbosity = 20  # WARNING — suppress lightning verbosity
+    print(f"\nTraining PeakVI (unsupervised) — max_epochs={args.max_epochs}, "
           f"early_stopping={args.early_stopping}...", flush=True)
     train_kwargs = dict(
         max_epochs=args.max_epochs,
@@ -706,16 +713,14 @@ def main():
         callbacks=[probe_callback],
     )
     if args.lr is not None:
-        # scVI takes lr via plan_kwargs (TrainingPlan.__init__), not as a
-        # direct train() arg.
-        train_kwargs["plan_kwargs"] = {"lr": args.lr}
+        train_kwargs["lr"] = args.lr
     model.train(**train_kwargs)
     trained_epochs = model.history["elbo_train"].shape[0]
     final_elbo     = float(model.history["elbo_train"].iloc[-1])
     print(f"  Trained {trained_epochs} epochs | final train ELBO: {final_elbo:.4f}")
 
     # ── Save final (early-stopped) model ─────────────────────────────
-    final_ckpt_dir = os.path.join(out_dir, "scvi_model_final")
+    final_ckpt_dir = os.path.join(out_dir, "peakvi_model_final")
     model.save(final_ckpt_dir, overwrite=True)
     print(f"  Final model saved → {final_ckpt_dir}")
     print(f"  Best downstream F1={probe_callback.best_f1:.4f} "
@@ -723,25 +728,28 @@ def main():
 
     # ── Load best checkpoint, extract embeddings, run full probe ─────
     print(f"\nLoading best-downstream checkpoint (epoch {probe_callback.best_epoch})...")
-    best_model = SCVI.load(best_ckpt_dir, adata=adata_train)
+    best_model = PEAKVI.load(best_ckpt_dir, adata=adata_train)
     # Older checkpoints from this script were saved with is_trained_=False
     # (see callback fix); force it on after load so inference works.
     best_model.is_trained_ = True
 
     print("Extracting validation embeddings (best checkpoint)...")
     z_val   = best_model.get_latent_representation(adata_val,   give_mean=True)
-    y_val   = labels[val_idx]
     print(f"  {z_val.shape[1]} dims  |  {len(y_val)} val samples")
 
     print("Extracting training embeddings (best checkpoint)...")
     z_train = best_model.get_latent_representation(adata_train, give_mean=True)
-    y_train = labels[train_idx]
     print(f"  {len(y_train)} train samples")
 
-    print("Extracting full-dataset embeddings (best checkpoint)...")
-    z_all   = best_model.get_latent_representation(adata,       give_mean=True)
-    y_all   = labels
-    print(f"  {len(y_all)} total samples")
+    # Reconstruct full-dataset embeddings from train+val (avoids keeping adata in RAM).
+    # Concatenate in [train_idx, val_idx] order; reorder to original cell order afterwards.
+    _z_concat = np.vstack([z_train, z_val])
+    _y_concat = np.concatenate([y_train, y_val])
+    _orig_order = np.argsort(np.concatenate([train_idx, val_idx]))
+    z_all = _z_concat[_orig_order]
+    y_all = _y_concat[_orig_order]
+    del _z_concat, _y_concat, _orig_order
+    print(f"  {len(y_all)} total samples (reconstructed from train+val)")
 
     # ── Full 5-fold SVC on best checkpoint (primary result) ──────────
     print("\nRunning full 5-fold SVC probe on best-downstream checkpoint...")
@@ -752,7 +760,7 @@ def main():
     z_val_final     = model.get_latent_representation(adata_val, give_mean=True)
     cv_result_final = run_svc_cv(z_val_final, y_val, args)
 
-    # ── Save results ──────────────────────────────────────────────────
+    # ── Save results ───────────────────────────────────────────────────
     result = {
         # Primary result: best-downstream checkpoint
         "metrics":                cv_result["mean_metrics"],
@@ -769,12 +777,12 @@ def main():
         # Training metadata
         "best_downstream_epoch":  probe_callback.best_epoch,
         "best_downstream_f1":     probe_callback.best_f1,
-        "scvi_trained_epochs":    trained_epochs,
-        "scvi_final_elbo":        final_elbo,
+        "peakvi_trained_epochs":  trained_epochs,
+        "peakvi_final_elbo":      final_elbo,
         "elbo_history":           probe_callback.elbo_history,
         "f1_history":             probe_callback.f1_history,
         "args":                   vars(args),
-        "protocol":               "scvi_train_val_embeddings_5fold_svc_cv_best_ckpt",
+        "protocol":               "peakvi_train_val_embeddings_5fold_svc_cv_best_ckpt",
     }
     with open(os.path.join(out_dir, "probe_metrics.json"), "w") as f:
         json.dump(result, f, indent=2)
@@ -792,7 +800,7 @@ def main():
         np.save(os.path.join(out_dir, "embeddings_all.npy"),   z_all)
         np.save(os.path.join(out_dir, "labels_all.npy"),       y_all)
 
-    # ── Print summary ─────────────────────────────────────────────────
+    # ── Print summary ──────────────────────────────────────────────────
     print("\n── Best-downstream checkpoint ──")
     for split in ["train", "test"]:
         m = cv_result["mean_metrics"][split]
@@ -817,10 +825,10 @@ def main():
               f"{cv_result['dropped_classes']}")
     print(f"\nSaved to: {out_dir}")
 
-    # ── Weights & Biases logging ──────────────────────────────────────
+    # ── Weights & Biases logging ───────────────────────────────────────
     if not args.no_wandb:
-        mean      = cv_result["mean_metrics"]       # best checkpoint
-        mean_fin  = cv_result_final["mean_metrics"] # final checkpoint
+        mean     = cv_result["mean_metrics"]       # best checkpoint
+        mean_fin = cv_result_final["mean_metrics"] # final checkpoint
         wandb.log({
             # ── Best-downstream checkpoint (primary metric) ──────────
             "cv_train/accuracy":          mean["train"]["accuracy"],
@@ -843,8 +851,8 @@ def main():
             "n_classes_dropped":          len(cv_result["dropped_classes"]),
             "best_downstream_epoch":      probe_callback.best_epoch,
             "best_downstream_f1":         probe_callback.best_f1,
-            "scvi_trained_epochs":        trained_epochs,
-            "scvi_final_elbo":            final_elbo,
+            "peakvi_trained_epochs":      trained_epochs,
+            "peakvi_final_elbo":          final_elbo,
         })
         fold_table = wandb.Table(
             columns=["fold", "train_size", "test_size",
@@ -861,7 +869,7 @@ def main():
                 fold["test"]["macro_f1"],
             )
         wandb.log({"fold_metrics": fold_table})
-        # Per-class accuracy table (mean ± std across folds, test split)
+
         per_class_table = wandb.Table(
             columns=["class_name", "mean_f1", "std_f1",
                      "mean_recall", "mean_precision", "mean_support"]

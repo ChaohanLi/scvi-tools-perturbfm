@@ -1,5 +1,5 @@
 program: probe.py
-project: scvi-probe
+project: peakvi-probe
 method: grid
 metric:
   goal: maximize
@@ -8,24 +8,20 @@ metric:
 parameters:
   dataset_id:
     values:
-      - 5w_GSE196830
-      - GSE96583
-      - 10w_GSE196830
-      - 20w_GSE196830
-      - 40w_GSE196830
-      - 120w_GSE196830
-  gene_space:
-    values:
-      - ensembl
-      - hgnc
+      - 5w_GSE196830_atac
+      - 10w_GSE196830_atac
+      - 20w_GSE196830_atac
+      - 40w_GSE196830_atac
+      - 80w_GSE196830_atac
+      - 120w_GSE196830_atac
+      - GSE96583_atac
 
 # Fixed args passed to every run.
-# ${args} expands to --dataset_id <value> for each trial.
 command:
   - /lichaohan/miniconda3/envs/scvi/bin/python
   - ${program}
   - --wandb_project
-  - scvi-probe
+  - peakvi-probe
   - --max_epochs
   - "500"
   - --early_stopping

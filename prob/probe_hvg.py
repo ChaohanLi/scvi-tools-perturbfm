@@ -1,18 +1,23 @@
 """
-Cell-type evaluation for scVI embeddings.
+Cell-type evaluation for scVI embeddings — HVG-filtered variant.
+
+Identical to probe.py except that **Highly Variable Gene selection is applied
+on the training split** (seurat_v3 flavor, raw-count variance stabilisation)
+before scVI training.  The same HVG mask is reused for the val and all-cell
+embeddings so there is no leakage.
+
+Default: top 5 000 HVGs (--n_top_genes 5000).  Pass --n_top_genes 0 to skip
+HVG selection and reproduce the full-gene probe.py behaviour.
 
 Protocol (matches scFoundation / scGPT probe baselines):
   - Same stratified 80/20 train/val split (seed=42)
-  - Train scVI **unsupervised** on train cells only (no cell-type labels)
+  - HVG selection on train cells only (seurat_v3, raw counts)
+  - Train scVI **unsupervised** on HVG-filtered train cells
   - Extract latent z (give_mean=True) from val cells
   - 5-fold StratifiedKFold on val embeddings:
       each fold: StandardScaler -> optional PCA -> LinearSVC(dual=False)
   - Report mean CV train/test accuracy, macro-F1, balanced-accuracy
 
-Data note: adata.X is log1p-normalized (no raw counts available).
-  scVI uses gene_likelihood="nb" (default) for numerical stability — the NB
-  likelihood is robust even on normalized data and avoids the scale-collapse
-  instability that "normal" likelihood suffers after ~150 epochs.
 scVI reference: Lopez et al. 2018 (Nature Methods).
 """
 
@@ -42,69 +47,13 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.svm import LinearSVC
 
 import scvi
-from lightning.pytorch.callbacks import Callback
 from scvi.model import SCVI
 
 _PROB_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 # ---------------------------------------------------------------------------
-# Build AnnData from scATAC-seq parquet by aggregating sites → gene activity
-# ---------------------------------------------------------------------------
-def parquet_to_adata(parquet_path: str, site_to_gene_path: str, label_h5ad_path: str):
-    """Aggregate 240 000 chromatin-accessibility sites into gene activity scores.
-
-    Mapping convention: mapping TSV row i (0-based) corresponds to parquet
-    data column str(i+1).  Sites are summed per gene_index to produce raw
-    integer gene activity counts suitable for scVI (NB likelihood).
-
-    Cell-type labels are taken from label_h5ad_path (barcodes must match).
-    """
-    import pandas as pd
-    import scipy.sparse as sp
-    import anndata as ad
-    import scanpy as sc
-
-    print(f"  Loading site-to-gene mapping: {site_to_gene_path}")
-    mapping = pd.read_csv(site_to_gene_path, sep="\t")
-    gene_indices = mapping["gene_index"].values          # (240000,) int
-    unique_gi, inv = np.unique(gene_indices, return_inverse=True)
-    n_genes = len(unique_gi)
-    gi_to_label = mapping.groupby("gene_index")["gene_label"].first()
-    gene_names = [str(gi_to_label[gi]) for gi in unique_gi]
-    print(f"  {len(mapping)} sites → {n_genes} genes")
-
-    print(f"  Loading parquet: {parquet_path}")
-    df = pd.read_parquet(parquet_path)
-    barcodes = df["cell_barcode"].values
-    data_cols = [str(i + 1) for i in range(len(mapping))]
-    df_data = df[data_cols]                              # (n_cells, 240000)
-
-    print(f"  Aggregating sites → genes (groupby sum)…")
-    # Rename columns to gene_index values, then groupby-sum on axis=1
-    df_data = df_data.copy()
-    df_data.columns = gene_indices
-    # Transpose → groupby rows → transpose back:  (240000, n_cells).groupby → (n_genes, n_cells) → (n_cells, n_genes)
-    X_gene = df_data.T.groupby(level=0).sum().T         # (n_cells, n_genes)
-    X_sparse = sp.csr_matrix(X_gene.values.astype(np.float32))
-
-    print(f"  Loading cell-type labels: {label_h5ad_path}")
-    adata_ref = sc.read_h5ad(label_h5ad_path)
-    bc_to_ct = dict(zip(adata_ref.obs_names, adata_ref.obs["cell_type"]))
-    cell_types = [bc_to_ct[bc] for bc in barcodes]
-
-    adata = ad.AnnData(
-        X=X_sparse,
-        obs=pd.DataFrame({"cell_type": cell_types}, index=pd.Index(barcodes, name="")),
-        var=pd.DataFrame(index=pd.Index(gene_names, name="")),
-    )
-    print(f"  AnnData built: {adata.shape}, {adata.obs['cell_type'].nunique()} cell types")
-    return adata
-
-
-# ---------------------------------------------------------------------------
 # Exact replica of the stratified split used in scFoundation / scGPT baselines
-# to guarantee the same train/val cells across all models.
 # ---------------------------------------------------------------------------
 def _stratified_train_val_split(
     barcodes: np.ndarray,
@@ -137,9 +86,7 @@ def _stratified_train_val_split(
 
 
 # ---------------------------------------------------------------------------
-# Dataset registry — maps dataset_id → (h5ad path, gene_space)
-# Sweep agents only need to pass --dataset_id; other dataset-specific fields
-# are resolved automatically from this table.
+# Dataset registry
 # ---------------------------------------------------------------------------
 DATASET_REGISTRY = {
     "5w_symbol":     {
@@ -152,7 +99,7 @@ DATASET_REGISTRY = {
     },
     "GSE96583":      {
         "h5ad":       "/lichaohan/readData/GSE96583_PBMC/GSE96583_merged_dedup.h5ad",
-        "gene_space": "ensembl",   # var_names are already HGNC symbols
+        "gene_space": "ensembl",
     },
     "10w_GSE196830": {
         "h5ad":       "/lichaohan/readData/10w_PBMC_GSE196830/10w_allcelltype.h5ad",
@@ -166,18 +113,6 @@ DATASET_REGISTRY = {
         "h5ad":       "/lichaohan/readData/40w_PBMC_GSE196830/GSE196830_40w_subset.h5ad",
         "gene_space": "hgnc",
     },
-    "120w_GSE196830": {
-        "h5ad":       "/lichaohan/readData/120w_PBMC_GSE196830/GSE196830_120w_subset.h5ad",
-        "gene_space": "hgnc",
-    },
-    # scATAC-seq gene-activity baseline: 240k sites aggregated to gene counts
-    "5w_GSE196830_atac": {
-        "parquet":      "/lichaohan/readData/5w_PBMC_GSE196830/counts_top12k_stratified_allchr.parquet",
-        "site_to_gene": "/lichaohan/readData/site_to_gene_index_stratified_top12k_bl.tsv",
-        "label_h5ad":   "/lichaohan/readData/5w_PBMC_GSE196830/5w_allcelltype.h5ad",
-        # var_names are already HGNC symbols after aggregation → skip Ensembl filter
-        "gene_space":   "ensembl",
-    },
 }
 
 
@@ -186,56 +121,46 @@ DATASET_REGISTRY = {
 # ---------------------------------------------------------------------------
 def parse_args():
     p = argparse.ArgumentParser(
-        description="Train scVI and evaluate a LinearSVC probe on val embeddings"
+        description="Train scVI (HVG-filtered) and evaluate a LinearSVC probe"
     )
     p.add_argument("--h5ad", type=str,
                    default="/lichaohan/readData/5w_allcelltype_anno_symbol.h5ad")
-    p.add_argument("--dataset_id", type=str, default="5w_symbol",
-                   help="Short dataset tag appended to run_name (e.g. 5w_symbol, "
-                        "5w_GSE196830, GSE96583, 10w_GSE196830, 20w_GSE196830, 40w_GSE196830)")
+    p.add_argument("--dataset_id", type=str, default="5w_symbol")
     p.add_argument("--train_size", type=float, default=0.8)
     p.add_argument("--seed", type=int, default=42)
+    # HVG selection
+    p.add_argument("--n_top_genes", type=int, default=5000,
+                   help="Number of highly variable genes to select (seurat_v3 flavor "
+                        "for raw-count data). Set to 0 to disable HVG selection.")
     # scVI model hyperparameters
-    p.add_argument("--n_latent", type=int, default=30,
-                   help="scVI latent dimension (default 30, common benchmark standard)")
+    p.add_argument("--n_latent", type=int, default=30)
     p.add_argument("--n_hidden", type=int, default=128)
     p.add_argument("--n_layers", type=int, default=2)
     p.add_argument("--gene_likelihood", type=str, default="nb",
-                   choices=["nb", "zinb", "normal"],
-                   help="scVI gene likelihood (default nb; numerically stable for log1p data)")
+                   choices=["nb", "zinb", "normal"])
     p.add_argument("--max_epochs", type=int, default=500,
                    help="scVI training epochs upper bound (default 500; early stopping "
                         "exits early when val ELBO plateaus).")
     p.add_argument("--batch_size_train", type=int, default=1024,
                    help="Mini-batch size for scVI training (default 1024; up from "
-                        "scVI's 128 default for better GPU utilization on large "
-                        "scRNA datasets — VAE/Adam with epoch-based KL warmup is robust)")
+                        "scVI's 128 default — VAE/Adam + epoch-based KL warmup is robust)")
     p.add_argument("--lr", type=float, default=None,
-                   help="Override scVI learning rate (default None → use framework "
-                        "default 1e-3, passed via plan_kwargs). Bump if you go "
-                        "beyond batch=2048.")
+                   help="Override scVI learning rate (default None → framework default 1e-3 via plan_kwargs)")
     p.add_argument("--early_stopping", default=True,
                    action=argparse.BooleanOptionalAction,
                    help="Enable scVI early stopping on val ELBO (default True). "
                         "Use --no_early_stopping to disable.")
     p.add_argument("--early_stopping_patience", type=int, default=24,
-                   help="Early-stopping patience in epochs (default 24; was 45 in "
-                        "scvi-tools default — tightened to cut wasted tail epochs).")
+                   help="Early-stopping patience in epochs (default 24; tightened from scvi-tools' 45).")
     # Gene space selection
     p.add_argument("--gene_space", type=str, default="ensembl",
-                   choices=["ensembl", "hgnc"],
-                   help="'ensembl': use var_names as-is; "
-                        "'hgnc': map Ensembl IDs → HGNC symbols via symbol_map, "
-                        "drop genes without a valid HGNC entry")
+                   choices=["ensembl", "hgnc"])
     p.add_argument("--symbol_map", type=str,
-                   default="/lichaohan/readData/gene_id_to_symbol.tsv",
-                   help="TSV (gene_id \t gene_symbol) for Ensembl→HGNC mapping. "
-                        "Only used when --gene_space hgnc")
+                   default="/lichaohan/readData/gene_id_to_symbol.tsv")
     # LinearSVC probe hyperparameters
     p.add_argument("--cv_folds", type=int, default=5)
     p.add_argument("--max_samples", type=int, default=5000)
-    p.add_argument("--pca_dim", type=int, default=None,
-                   help="PCA before SVC. Default None = skip (n_latent=30 is already compact).")
+    p.add_argument("--pca_dim", type=int, default=None)
     p.add_argument("--max_iter", type=int, default=2000)
     p.add_argument("--n_jobs", type=int, default=16)
     # Output
@@ -244,7 +169,7 @@ def parse_args():
     p.add_argument("--run_name", type=str, default=None)
     p.add_argument("--save_embeddings", action="store_true")
     # Weights & Biases
-    p.add_argument("--wandb_project", type=str, default="scvi-probe")
+    p.add_argument("--wandb_project", type=str, default="scvi-probe-hvg")
     p.add_argument("--no_wandb", action="store_true")
     return p.parse_args()
 
@@ -374,7 +299,6 @@ def run_svc_cv(embeddings, labels, args):
             for key in ["accuracy", "balanced_accuracy", "macro_f1", "weighted_f1"]
         }
 
-    # Aggregate per-class metrics across folds (mean ± std)
     n_kept = len(keep_classes)
     per_class_cv = []
     for c in range(n_kept):
@@ -403,160 +327,6 @@ def run_svc_cv(embeddings, labels, args):
     }
 
 
-# ---------------------------------------------------------------------------
-# Fast single-split probe for per-epoch checkpoint selection
-# ---------------------------------------------------------------------------
-def _quick_probe_f1(z_val: np.ndarray, y_val: np.ndarray, args) -> float:
-    """Stratified 70/30 single-split macro-F1.  Runs in O(seconds) per epoch;
-    used only to decide which checkpoint has best downstream performance."""
-    from sklearn.model_selection import StratifiedShuffleSplit
-
-    unique, counts = np.unique(y_val, return_counts=True)
-    keep = unique[counts >= 2]
-    if len(keep) < 2:
-        return 0.0
-    if len(keep) < len(unique):
-        mask = np.isin(y_val, keep)
-        z_val = z_val[mask]
-        y_val = y_val[mask]
-        y_val = np.searchsorted(keep, y_val)
-
-    # Cap at 6 000 to keep inference fast on large val sets
-    if len(z_val) > 6000:
-        rng = np.random.default_rng(args.seed)
-        idx = rng.choice(len(z_val), 6000, replace=False)
-        z_val = z_val[idx]
-        y_val = y_val[idx]
-
-    try:
-        sss = StratifiedShuffleSplit(n_splits=1, test_size=0.3, random_state=args.seed)
-        tr_idx, te_idx = next(sss.split(z_val, y_val))
-    except ValueError:
-        return 0.0
-
-    z_tr, z_te = z_val[tr_idx], z_val[te_idx]
-    y_tr, y_te = y_val[tr_idx], y_val[te_idx]
-
-    if len(z_tr) > args.max_samples:
-        rng = np.random.default_rng(args.seed)
-        idx = rng.choice(len(z_tr), args.max_samples, replace=False)
-        z_tr = z_tr[idx]
-        y_tr = y_tr[idx]
-
-    pipe = Pipeline([
-        ("scaler", StandardScaler()),
-        ("svc",    LinearSVC(dual=False, max_iter=args.max_iter,
-                             random_state=args.seed)),
-    ])
-    try:
-        pipe.fit(z_tr, y_tr)
-        return float(f1_score(pipe.predict(z_te), y_te,
-                              average="macro", zero_division=0))
-    except Exception:
-        return 0.0
-
-
-# ---------------------------------------------------------------------------
-# Per-epoch probe callback (Lightning)
-# ---------------------------------------------------------------------------
-class PerEpochProbeCallback(Callback):
-    """Runs a quick downstream SVC probe after each validation epoch.
-
-    Reads per-epoch ELBO from Lightning callback_metrics and logs it to wandb.
-    After each validation epoch, extracts val embeddings from the scvi-tools
-    model and runs _quick_probe_f1.  If the F1 improves, saves the current
-    model state as the best-downstream checkpoint.
-
-    Attributes
-    ----------
-    best_f1 : float
-        Best quick macro-F1 seen so far.
-    best_epoch : int
-        1-based epoch at which best_f1 was achieved.
-    elbo_history : list of (epoch, elbo_train, elbo_val)
-    f1_history   : list of (epoch, quick_f1)
-    """
-
-    def __init__(
-        self,
-        scvi_model,
-        adata_val,
-        y_val: np.ndarray,
-        args,
-        best_ckpt_dir: str,
-        use_wandb: bool,
-    ):
-        super().__init__()
-        self.scvi_model    = scvi_model
-        self.adata_val     = adata_val
-        self.y_val         = y_val
-        self.args          = args
-        self.best_ckpt_dir = best_ckpt_dir
-        self.use_wandb     = use_wandb
-
-        self.best_f1    = -1.0
-        self.best_epoch = -1
-        self.elbo_history: list = []  # (epoch, elbo_train, elbo_val)
-        self.f1_history:   list = []  # (epoch, quick_f1)
-
-    def on_validation_epoch_end(self, trainer, pl_module):
-        # Lightning current_epoch is 0-based; use 1-based for human readability
-        epoch = trainer.current_epoch + 1
-
-        elbo_train = float(trainer.callback_metrics.get("elbo_train",
-                                                         float("nan")))
-        elbo_val   = float(trainer.callback_metrics.get("elbo_validation",
-                                                         float("nan")))
-        self.elbo_history.append((epoch, elbo_train, elbo_val))
-
-        # _check_if_trained raises unless is_trained_ is True;
-        # set it temporarily — the module weights are valid mid-training.
-        _was_trained = self.scvi_model.is_trained_
-        self.scvi_model.is_trained_ = True
-        try:
-            with torch.no_grad():
-                z_val = self.scvi_model.get_latent_representation(
-                    self.adata_val, give_mean=True
-                )
-        finally:
-            self.scvi_model.is_trained_ = _was_trained
-
-        f1 = _quick_probe_f1(z_val, self.y_val, self.args)
-        self.f1_history.append((epoch, f1))
-
-        if self.use_wandb:
-            wandb.log({
-                "epoch":                epoch,
-                "train/elbo_train":     elbo_train,
-                "train/elbo_val":       elbo_val,
-                "epoch_probe/quick_f1": f1,
-            })
-
-        print(
-            f"  [Epoch {epoch:3d}] elbo_train={elbo_train:.4f}  "
-            f"elbo_val={elbo_val:.4f}  quick_f1={f1:.4f}",
-            flush=True,
-        )
-
-        if f1 > self.best_f1:
-            self.best_f1    = f1
-            self.best_epoch = epoch
-            # Force is_trained_=True before save so the serialized attr_dict
-            # passes _check_if_trained on reload; restore in finally so the
-            # rest of the training loop is unaffected.
-            _was_trained = self.scvi_model.is_trained_
-            self.scvi_model.is_trained_ = True
-            try:
-                self.scvi_model.save(self.best_ckpt_dir, overwrite=True)
-            finally:
-                self.scvi_model.is_trained_ = _was_trained
-            print(
-                f"    → New best downstream F1={f1:.4f} at epoch {epoch} "
-                f"— checkpoint saved.",
-                flush=True,
-            )
-
-
 def save_fold_metrics(path, cv_result):
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
@@ -583,11 +353,10 @@ def save_fold_metrics(path, cv_result):
 # ---------------------------------------------------------------------------
 def main():
     args = parse_args()
-    # Auto-resolve dataset-specific fields from registry (enables wandb sweep).
-    # gene_space from registry is only used as fallback when not explicitly passed.
+
+    # Auto-resolve dataset fields from registry
     _explicit = set()
-    import sys as _sys
-    for _tok in _sys.argv[1:]:
+    for _tok in sys.argv[1:]:
         if _tok.startswith("--gene_space"):
             _explicit.add("gene_space")
     if args.dataset_id in DATASET_REGISTRY:
@@ -596,13 +365,16 @@ def main():
             args.h5ad = cfg["h5ad"]
         if "gene_space" not in _explicit:
             args.gene_space = cfg["gene_space"]
+
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     scvi.settings.seed = args.seed
 
-    device   = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    hvg_tag  = f"hvg{args.n_top_genes}" if args.n_top_genes > 0 else "nohvg"
     run_name = args.run_name or time.strftime("probe_%Y%m%d_%H%M%S")
-    run_name = f"{run_name}_{args.dataset_id}_{args.gene_space}"
+    run_name = f"{run_name}_{args.dataset_id}_{args.gene_space}_{hvg_tag}"
     out_dir  = os.path.join(args.output_dir, run_name)
     os.makedirs(out_dir, exist_ok=True)
 
@@ -618,24 +390,17 @@ def main():
         )
 
     # ── Load data ─────────────────────────────────────────────────────
-    _cfg = DATASET_REGISTRY.get(args.dataset_id, {})
-    if "parquet" in _cfg:
-        print(f"Loading from parquet (ATAC gene-activity): {_cfg['parquet']}")
-        adata = parquet_to_adata(_cfg["parquet"], _cfg["site_to_gene"], _cfg["label_h5ad"])
-    else:
-        print(f"Loading h5ad: {args.h5ad}")
-        adata = sc.read_h5ad(args.h5ad)
+    print(f"Loading h5ad: {args.h5ad}")
+    adata = sc.read_h5ad(args.h5ad)
     print(f"  Shape: {adata.shape}  obs columns: {list(adata.obs.columns)}")
 
     # ── HGNC gene filtering (optional) ───────────────────────────────
     if args.gene_space == "hgnc":
         import pandas as pd
         sym_df = pd.read_csv(args.symbol_map, sep="\t", index_col=0)
-        # Keep only genes whose Ensembl ID has a valid HGNC symbol
         keep_mask = np.array([g in sym_df.index for g in adata.var_names])
         n_before = adata.n_vars
         adata = adata[:, keep_mask].copy()
-        # Rename var_names to HGNC symbols
         adata.var_names = pd.Index(
             [sym_df.loc[g, "gene_symbol"] for g in adata.var_names]
         )
@@ -643,15 +408,15 @@ def main():
               f"renamed to HGNC symbols")
 
     # ── Build label encoding ──────────────────────────────────────────
-    cell_types  = adata.obs["cell_type"].values
-    classes     = sorted(set(cell_types))
-    type2idx    = {c: i for i, c in enumerate(classes)}
-    labels      = np.array([type2idx[c] for c in cell_types], dtype=np.int64)
-    n_class     = len(classes)
+    cell_types = adata.obs["cell_type"].values
+    classes    = sorted(set(cell_types))
+    type2idx   = {c: i for i, c in enumerate(classes)}
+    labels     = np.array([type2idx[c] for c in cell_types], dtype=np.int64)
+    n_class    = len(classes)
 
     # ── Stratified 80/20 split — identical to scFoundation/scGPT split ─
-    barcodes           = np.array(adata.obs_names)
-    train_bc, val_bc   = _stratified_train_val_split(
+    barcodes         = np.array(adata.obs_names)
+    train_bc, val_bc = _stratified_train_val_split(
         barcodes, labels,
         train_size=args.train_size,
         random_state=args.seed,
@@ -665,9 +430,32 @@ def main():
     print(f"  Split: {len(train_idx)} train / {len(val_idx)} val")
     print(f"  Classes: {n_class}")
 
+    # ── HVG selection (train split only — no leakage) ────────────────
+    # seurat_v3 flavor uses variance-stabilising transform suitable for raw
+    # integer counts.  The resulting boolean mask is applied to val and the
+    # full dataset so all three embedding extractions use the same gene set.
+    if args.n_top_genes > 0:
+        print(f"\nSelecting top {args.n_top_genes} HVGs on training data "
+              f"(seurat_v3, raw counts)...")
+        sc.pp.highly_variable_genes(
+            adata_train,
+            n_top_genes=args.n_top_genes,
+            flavor="seurat_v3",
+            subset=False,
+        )
+        hvg_mask   = adata_train.var["highly_variable"].values
+        n_hvg      = int(hvg_mask.sum())
+        hvg_names  = adata_train.var_names[hvg_mask].tolist()
+        print(f"  {n_hvg} HVGs selected (of {adata_train.n_vars} input genes)")
+        adata_train = adata_train[:, hvg_mask].copy()
+        adata_val   = adata_val[:,   hvg_mask].copy()
+        adata       = adata[:,       hvg_mask].copy()
+    else:
+        n_hvg     = adata_train.n_vars
+        hvg_names = None
+        print(f"\nHVG selection disabled; using all {n_hvg} genes")
+
     # ── Set up scVI ───────────────────────────────────────────────────
-    # Data is log1p-normalized → use gene_likelihood="normal" (Gaussian).
-    # Training is fully unsupervised: no cell-type labels used.
     scvi.settings.num_threads = 4
     SCVI.setup_anndata(adata_train)
 
@@ -679,22 +467,11 @@ def main():
         gene_likelihood=args.gene_likelihood,
     )
     print(f"\nscVI model: n_latent={args.n_latent}, n_hidden={args.n_hidden}, "
-          f"n_layers={args.n_layers}, gene_likelihood={args.gene_likelihood}")
+          f"n_layers={args.n_layers}, gene_likelihood={args.gene_likelihood}, "
+          f"n_genes={n_hvg}")
     print(f"  Parameters: {sum(p.numel() for p in model.module.parameters()):,}")
 
-    # ── Per-epoch probe callback ──────────────────────────────────────
-    best_ckpt_dir = os.path.join(out_dir, "scvi_model_best_f1")
-    probe_callback = PerEpochProbeCallback(
-        scvi_model    = model,
-        adata_val     = adata_val,
-        y_val         = y_val,
-        args          = args,
-        best_ckpt_dir = best_ckpt_dir,
-        use_wandb     = not args.no_wandb,
-    )
-
     # ── Train ─────────────────────────────────────────────────────────
-    # Suppress scVI's verbose lightning output
     scvi.settings.verbosity = 20  # WARNING level
     print(f"\nTraining scVI (unsupervised) — max_epochs={args.max_epochs}, "
           f"early_stopping={args.early_stopping}...", flush=True)
@@ -703,58 +480,34 @@ def main():
         batch_size=args.batch_size_train,
         early_stopping=args.early_stopping,
         early_stopping_patience=args.early_stopping_patience,
-        callbacks=[probe_callback],
     )
     if args.lr is not None:
-        # scVI takes lr via plan_kwargs (TrainingPlan.__init__), not as a
-        # direct train() arg.
         train_kwargs["plan_kwargs"] = {"lr": args.lr}
     model.train(**train_kwargs)
     trained_epochs = model.history["elbo_train"].shape[0]
     final_elbo     = float(model.history["elbo_train"].iloc[-1])
     print(f"  Trained {trained_epochs} epochs | final train ELBO: {final_elbo:.4f}")
 
-    # ── Save final (early-stopped) model ─────────────────────────────
-    final_ckpt_dir = os.path.join(out_dir, "scvi_model_final")
-    model.save(final_ckpt_dir, overwrite=True)
-    print(f"  Final model saved → {final_ckpt_dir}")
-    print(f"  Best downstream F1={probe_callback.best_f1:.4f} "
-          f"at epoch {probe_callback.best_epoch} → {best_ckpt_dir}")
-
-    # ── Load best checkpoint, extract embeddings, run full probe ─────
-    print(f"\nLoading best-downstream checkpoint (epoch {probe_callback.best_epoch})...")
-    best_model = SCVI.load(best_ckpt_dir, adata=adata_train)
-    # Older checkpoints from this script were saved with is_trained_=False
-    # (see callback fix); force it on after load so inference works.
-    best_model.is_trained_ = True
-
-    print("Extracting validation embeddings (best checkpoint)...")
-    z_val   = best_model.get_latent_representation(adata_val,   give_mean=True)
+    # ── Extract embeddings ───────────────────────────────────────────
+    print("Extracting validation embeddings...")
+    z_val   = model.get_latent_representation(adata_val,   give_mean=True)
     y_val   = labels[val_idx]
-    print(f"  {z_val.shape[1]} dims  |  {len(y_val)} val samples")
-
-    print("Extracting training embeddings (best checkpoint)...")
-    z_train = best_model.get_latent_representation(adata_train, give_mean=True)
+    print(f"Embedding shape: {z_val.shape[1]} dims")
+    print(f"Validation samples: {len(y_val)}")
+    print("Extracting training embeddings...")
+    z_train = model.get_latent_representation(adata_train, give_mean=True)
     y_train = labels[train_idx]
-    print(f"  {len(y_train)} train samples")
-
-    print("Extracting full-dataset embeddings (best checkpoint)...")
-    z_all   = best_model.get_latent_representation(adata,       give_mean=True)
+    print(f"Training samples: {len(y_train)}")
+    print("Extracting full-dataset embeddings...")
+    z_all   = model.get_latent_representation(adata,       give_mean=True)
     y_all   = labels
-    print(f"  {len(y_all)} total samples")
+    print(f"Total samples: {len(y_all)}")
 
-    # ── Full 5-fold SVC on best checkpoint (primary result) ──────────
-    print("\nRunning full 5-fold SVC probe on best-downstream checkpoint...")
+    # ── LinearSVC probe ───────────────────────────────────────────────
     cv_result = run_svc_cv(z_val, y_val, args)
-
-    # ── Full 5-fold SVC on final checkpoint (comparison) ─────────────
-    print("\nRunning full 5-fold SVC probe on final (early-stopped) checkpoint...")
-    z_val_final     = model.get_latent_representation(adata_val, give_mean=True)
-    cv_result_final = run_svc_cv(z_val_final, y_val, args)
 
     # ── Save results ──────────────────────────────────────────────────
     result = {
-        # Primary result: best-downstream checkpoint
         "metrics":                cv_result["mean_metrics"],
         "fold_metrics":           cv_result["fold_metrics"],
         "per_class_cv":           cv_result["per_class_cv"],
@@ -764,25 +517,23 @@ def main():
         "kept_classes":           cv_result["kept_classes"],
         "dropped_classes":        cv_result["dropped_classes"],
         "n_samples_after_filter": cv_result["n_samples_after_filter"],
-        # Final (early-stopped) checkpoint for comparison
-        "final_metrics":          cv_result_final["mean_metrics"],
-        # Training metadata
-        "best_downstream_epoch":  probe_callback.best_epoch,
-        "best_downstream_f1":     probe_callback.best_f1,
         "scvi_trained_epochs":    trained_epochs,
         "scvi_final_elbo":        final_elbo,
-        "elbo_history":           probe_callback.elbo_history,
-        "f1_history":             probe_callback.f1_history,
+        "n_hvg_requested":        args.n_top_genes,
+        "n_hvg_selected":         n_hvg,
         "args":                   vars(args),
-        "protocol":               "scvi_train_val_embeddings_5fold_svc_cv_best_ckpt",
+        "protocol":               "scvi_hvg_train_val_embeddings_5fold_svc_cv",
     }
     with open(os.path.join(out_dir, "probe_metrics.json"), "w") as f:
         json.dump(result, f, indent=2)
     with open(os.path.join(out_dir, "class_names.json"), "w") as f:
         json.dump(classes, f, indent=2)
+    if hvg_names is not None:
+        with open(os.path.join(out_dir, "hvg_names.json"), "w") as f:
+            json.dump(hvg_names, f, indent=2)
     save_fold_metrics(os.path.join(out_dir, "probe_fold_metrics.csv"), cv_result)
 
-    # Best-downstream and final models were already saved during training
+    model.save(os.path.join(out_dir, "scvi_model"), overwrite=True)
 
     if args.save_embeddings:
         np.save(os.path.join(out_dir, "embeddings_val.npy"),   z_val)
@@ -793,19 +544,10 @@ def main():
         np.save(os.path.join(out_dir, "labels_all.npy"),       y_all)
 
     # ── Print summary ─────────────────────────────────────────────────
-    print("\n── Best-downstream checkpoint ──")
+    print(f"\nHVG: {n_hvg} genes used")
+    print("Probe metrics")
     for split in ["train", "test"]:
         m = cv_result["mean_metrics"][split]
-        print(
-            f"cv {split:>5}: acc={m['accuracy']:.4f} "
-            f"bal_acc={m['balanced_accuracy']:.4f} "
-            f"macro_f1={m['macro_f1']:.4f} "
-            f"weighted_f1={m['weighted_f1']:.4f}"
-        )
-    print(f"  (epoch {probe_callback.best_epoch} of {trained_epochs} total)")
-    print("\n── Final (early-stopped) checkpoint ──")
-    for split in ["train", "test"]:
-        m = cv_result_final["mean_metrics"][split]
         print(
             f"cv {split:>5}: acc={m['accuracy']:.4f} "
             f"bal_acc={m['balanced_accuracy']:.4f} "
@@ -819,10 +561,8 @@ def main():
 
     # ── Weights & Biases logging ──────────────────────────────────────
     if not args.no_wandb:
-        mean      = cv_result["mean_metrics"]       # best checkpoint
-        mean_fin  = cv_result_final["mean_metrics"] # final checkpoint
+        mean = cv_result["mean_metrics"]
         wandb.log({
-            # ── Best-downstream checkpoint (primary metric) ──────────
             "cv_train/accuracy":          mean["train"]["accuracy"],
             "cv_train/balanced_accuracy": mean["train"]["balanced_accuracy"],
             "cv_train/macro_f1":          mean["train"]["macro_f1"],
@@ -831,20 +571,13 @@ def main():
             "cv_test/balanced_accuracy":  mean["test"]["balanced_accuracy"],
             "cv_test/macro_f1":           mean["test"]["macro_f1"],
             "cv_test/weighted_f1":        mean["test"]["weighted_f1"],
-            # ── Final (early-stopped) checkpoint (comparison) ────────
-            "final/cv_test/accuracy":           mean_fin["test"]["accuracy"],
-            "final/cv_test/balanced_accuracy":  mean_fin["test"]["balanced_accuracy"],
-            "final/cv_test/macro_f1":           mean_fin["test"]["macro_f1"],
-            "final/cv_test/weighted_f1":        mean_fin["test"]["weighted_f1"],
-            # ── Training metadata ────────────────────────────────────
             "embedding_dim":              int(z_val.shape[1]),
             "n_val_samples":              int(len(y_val)),
             "n_classes_used":             len(cv_result["kept_classes"]),
             "n_classes_dropped":          len(cv_result["dropped_classes"]),
-            "best_downstream_epoch":      probe_callback.best_epoch,
-            "best_downstream_f1":         probe_callback.best_f1,
             "scvi_trained_epochs":        trained_epochs,
             "scvi_final_elbo":            final_elbo,
+            "n_hvg_selected":             n_hvg,
         })
         fold_table = wandb.Table(
             columns=["fold", "train_size", "test_size",
@@ -861,7 +594,6 @@ def main():
                 fold["test"]["macro_f1"],
             )
         wandb.log({"fold_metrics": fold_table})
-        # Per-class accuracy table (mean ± std across folds, test split)
         per_class_table = wandb.Table(
             columns=["class_name", "mean_f1", "std_f1",
                      "mean_recall", "mean_precision", "mean_support"]
@@ -879,19 +611,6 @@ def main():
                 round(entry["mean_support"],   1),
             )
         wandb.log({"per_class_metrics": per_class_table})
-
-        # ELBO history table (training curve)
-        elbo_table = wandb.Table(columns=["epoch", "elbo_train", "elbo_val"])
-        for ep, et, ev in probe_callback.elbo_history:
-            elbo_table.add_data(ep, round(et, 4), round(ev, 4))
-        wandb.log({"elbo_history": elbo_table})
-
-        # Per-epoch quick-probe F1 table
-        f1_table = wandb.Table(columns=["epoch", "quick_f1"])
-        for ep, f1 in probe_callback.f1_history:
-            f1_table.add_data(ep, round(f1, 4))
-        wandb.log({"epoch_f1_history": f1_table})
-
         wandb.finish()
 
 

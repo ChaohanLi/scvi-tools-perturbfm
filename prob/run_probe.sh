@@ -32,14 +32,19 @@ set -euo pipefail
 # GENE_SPACE="hgnc"    # or "hgnc"
 
 # Dataset: 10w_GSE196830 (raw counts, 29 classes) — recommended for NB
-H5AD="/lichaohan/readData/10w_PBMC_GSE196830/10w_allcelltype.h5ad"
-DATASET_ID="10w_GSE196830"
-GENE_SPACE="hgnc"    # or "hgnc"
+# H5AD="/lichaohan/readData/10w_PBMC_GSE196830/10w_allcelltype.h5ad"
+# DATASET_ID="10w_GSE196830"
+# GENE_SPACE="hgnc"    # or "hgnc"
 
 #Dataset: 20w_GSE196830 (raw counts, 29 classes) — recommended for NB
 # H5AD="/lichaohan/readData/20w_PBMC_GSE196830/20w_allcelltype.h5ad"
 # DATASET_ID="20w_GSE196830"
 # GENE_SPACE="hgnc"    # or "hgnc"
+
+#Dataset: 40w_GSE196830 (raw counts, 29 classes) — recommended for NB
+H5AD="/lichaohan/readData/40w_PBMC_GSE196830/GSE196830_40w_subset.h5ad"
+DATASET_ID="40w_GSE196830"
+GENE_SPACE="ensembl"
 
 # ─── Run configuration ──────────────────────────────────────────────────────
 RUN_NAME="probe"                       # wandb run name prefix (dataset_id + gene_space appended automatically)
@@ -49,10 +54,15 @@ N_LATENT=30
 N_HIDDEN=128
 N_LAYERS=2
 GENE_LIKELIHOOD="nb"                   # nb (recommended), zinb, or normal
-BATCH_SIZE_TRAIN=128
+BATCH_SIZE_TRAIN=1024  # up from scVI's 128 default for better GPU utilization; VAE/Adam + epoch-based KL warmup is robust to this jump
 N_JOBS=16
 MAX_ITER=2000
 SAVE_EMBEDDINGS=""                     # set to "--save_embeddings" to also save embeddings_val.npy / labels_val.npy (needed for visualize.py)
+MAX_EPOCHS=500                         # 500 epochs upper bound: with batch_size=1024, each epoch has 1/8
+                                       # the gradient steps vs batch=128 — need more epochs for same total
+                                       # updates. Early stopping (val ELBO, patience=24) exits early.
+EARLY_STOPPING="--early_stopping"      # stop early when val ELBO stops improving; use "" to disable
+EARLY_STOPPING_PATIENCE=24             # tightened from scvi-tools default of 45 — cuts wasted tail epochs after the plateau
 
 PYTHON="/lichaohan/miniconda3/envs/scvi/bin/python"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -74,6 +84,9 @@ $PYTHON probe.py \
     --n_layers          "${N_LAYERS}" \
     --gene_likelihood   "${GENE_LIKELIHOOD}" \
     --batch_size_train  "${BATCH_SIZE_TRAIN}" \
+    --max_epochs        "${MAX_EPOCHS}" \
+    --early_stopping_patience "${EARLY_STOPPING_PATIENCE}" \
     --n_jobs            "${N_JOBS}" \
     --max_iter          "${MAX_ITER}" \
+    ${EARLY_STOPPING} \
     ${SAVE_EMBEDDINGS}

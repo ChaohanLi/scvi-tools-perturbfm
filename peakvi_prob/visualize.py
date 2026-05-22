@@ -1,5 +1,5 @@
 """
-Paper-quality UMAP / t-SNE visualization of probe embeddings.
+Paper-quality UMAP / t-SNE visualization of PeakVI probe embeddings.
 
 Requires embeddings saved with --save_embeddings when running probe.py.
 Looks for:
