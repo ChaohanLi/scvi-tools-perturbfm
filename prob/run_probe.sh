@@ -17,45 +17,45 @@ set -euo pipefail
 #  Pick one dataset block and comment out the rest, or override all variables.
 
 # Dataset: 5w_symbol (original, log1p normalized, 29 classes)
-# H5AD="/lichaohan/readData/5w_allcelltype_anno_symbol.h5ad"
+# H5AD="/root/project/chaohan/readData/5w_allcelltype_anno_symbol.h5ad"
 # DATASET_ID="5w_symbol"
 # GENE_SPACE="ensembl"    # var_names already HGNC; set "ensembl" to keep all 30k genes as-is
 
 # Dataset: 5w_GSE196830 (raw counts, 29 classes) — recommended for NB
-# H5AD="/lichaohan/readData/5w_PBMC_GSE196830/5w_allcelltype.h5ad"
+# H5AD="/root/project/chaohan/readData/5w_PBMC_GSE196830/5w_allcelltype.h5ad"
 # DATASET_ID="5w_GSE196830"
 # GENE_SPACE="hgnc"    # or "hgnc" to map Ensembl→HGNC and drop unmapped genes
 
 # Dataset: GSE96583 (raw counts, 8 classes) — recommended for NB
-# H5AD="/lichaohan/readData/GSE96583_PBMC/GSE96583_merged_dedup.h5ad"
+# H5AD="/root/project/chaohan/readData/GSE96583_PBMC/GSE96583_merged_dedup.h5ad"
 # DATASET_ID="GSE96583"
 # GENE_SPACE="hgnc"    # or "hgnc"
 
 # Dataset: 10w_GSE196830 (raw counts, 29 classes) — recommended for NB
-# H5AD="/lichaohan/readData/10w_PBMC_GSE196830/10w_allcelltype.h5ad"
+# H5AD="/root/project/chaohan/readData/10w_PBMC_GSE196830/10w_allcelltype.h5ad"
 # DATASET_ID="10w_GSE196830"
 # GENE_SPACE="hgnc"    # or "hgnc"
 
 #Dataset: 20w_GSE196830 (raw counts, 29 classes) — recommended for NB
-# H5AD="/lichaohan/readData/20w_PBMC_GSE196830/20w_allcelltype.h5ad"
+# H5AD="/root/project/chaohan/readData/20w_PBMC_GSE196830/20w_allcelltype.h5ad"
 # DATASET_ID="20w_GSE196830"
 # GENE_SPACE="hgnc"    # or "hgnc"
 
 #Dataset: 40w_GSE196830 (raw counts, 29 classes) — recommended for NB
-H5AD="/lichaohan/readData/40w_PBMC_GSE196830/GSE196830_40w_subset.h5ad"
+H5AD="/root/project/chaohan/readData/40w_PBMC_GSE196830/GSE196830_40w_subset.h5ad"
 DATASET_ID="40w_GSE196830"
 GENE_SPACE="ensembl"
 
 # ─── Run configuration ──────────────────────────────────────────────────────
 RUN_NAME="probe"                       # wandb run name prefix (dataset_id + gene_space appended automatically)
 WANDB_PROJECT="scvi-probe"
-SYMBOL_MAP="/lichaohan/readData/gene_id_to_symbol.tsv"  # used only when GENE_SPACE=hgnc
+SYMBOL_MAP="/root/project/chaohan/readData/gene_id_to_symbol.tsv"  # used only when GENE_SPACE=hgnc
 N_LATENT=30
 N_HIDDEN=128
 N_LAYERS=2
 GENE_LIKELIHOOD="nb"                   # nb (recommended), zinb, or normal
-BATCH_SIZE_TRAIN=1024  # up from scVI's 128 default for better GPU utilization; VAE/Adam + epoch-based KL warmup is robust to this jump
-N_JOBS=16
+BATCH_SIZE_TRAIN=512  # up from scVI's 128 default for better GPU utilization; VAE/Adam + epoch-based KL warmup is robust to this jump
+N_JOBS=12
 MAX_ITER=2000
 SAVE_EMBEDDINGS=""                     # set to "--save_embeddings" to also save embeddings_val.npy / labels_val.npy (needed for visualize.py)
 MAX_EPOCHS=500                         # 500 epochs upper bound: with batch_size=1024, each epoch has 1/8
@@ -64,7 +64,7 @@ MAX_EPOCHS=500                         # 500 epochs upper bound: with batch_size
 EARLY_STOPPING="--early_stopping"      # stop early when val ELBO stops improving; use "" to disable
 EARLY_STOPPING_PATIENCE=24             # tightened from scvi-tools default of 45 — cuts wasted tail epochs after the plateau
 
-PYTHON="/lichaohan/miniconda3/envs/scvi/bin/python"
+PYTHON="/root/project/chaohan/.conda/bin/python"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUTPUT_DIR="${SCRIPT_DIR}/outputs_probe"   # output root; run_name appended automatically
 

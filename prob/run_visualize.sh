@@ -9,13 +9,13 @@
 # =============================================================================
 set -euo pipefail
 
-PYTHON="/lichaohan/miniconda3/envs/scvi/bin/python"
+PYTHON="/root/project/chaohan/.conda/bin/python"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ─── Configuration ──────────────────────────────────────────────────────────
 # Point RUN_DIR to a single run directory (e.g. outputs_probe/probe_GSE96583_hgnc)
 # or to the outputs_probe/ root to visualize all runs at once.
-RUN_DIR="/lichaohan/perturbfm/prob/outputs_probe"
+RUN_DIR="/root/project/chaohan/scvi-tools-perturbfm/prob/outputs_probe"
 
 METHOD="both"      # umap | tsne | both
 MAX_CELLS=20000    # subsample to this many cells before UMAP/t-SNE

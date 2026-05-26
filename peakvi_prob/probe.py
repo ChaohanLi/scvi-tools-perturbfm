@@ -64,45 +64,45 @@ _PROB_DIR = os.path.dirname(os.path.abspath(__file__))
 DATASET_REGISTRY = {
     # ── scATAC parquet datasets (GSE196830 + GSE96583) ──────────────────
     "5w_GSE196830_atac": {
-        "parquet":   "/lichaohan/readData/5w_PBMC_GSE196830/counts_top12k_stratified_allchr.parquet",
-        "site_tsv":  "/lichaohan/readData/site_to_gene_index_stratified_top12k_bl.tsv",
-        "label_csv": "/lichaohan/readData/5w_PBMC_GSE196830/filtered_5w_all_cells.csv",
+        "parquet":   "/root/project/chaohan/readData/5w_PBMC_GSE196830/counts_top12k_stratified_allchr.parquet",
+        "site_tsv":  "/root/project/chaohan/readData/5w_PBMC_GSE196830/site_to_gene_index_stratified_top12k_bl.tsv",
+        "label_csv": "/root/project/chaohan/readData/5w_PBMC_GSE196830/filtered_5w_all_cells.csv",
         "n_class":   29,
     },
     "10w_GSE196830_atac": {
-        "parquet":   "/lichaohan/readData/10w_PBMC_GSE196830/stratified_noncoding33_counts.parquet",
-        "site_tsv":  "/lichaohan/readData/10w_PBMC_GSE196830/site_to_gene_index_stratified_noncoding33_10w_nochr5.tsv",
-        "label_csv": "/lichaohan/readData/10w_PBMC_GSE196830/filtered_10w_all_celltype.csv",
+        "parquet":   "/root/project/chaohan/readData/10w_PBMC_GSE196830/stratified_noncoding33_counts.parquet",
+        "site_tsv":  "/root/project/chaohan/readData/10w_PBMC_GSE196830/site_to_gene_index_stratified_noncoding33_10w_nochr5.tsv",
+        "label_csv": "/root/project/chaohan/readData/10w_PBMC_GSE196830/filtered_10w_all_celltype.csv",
         "n_class":   29,
     },
     "20w_GSE196830_atac": {
-        "parquet":   "/lichaohan/readData/20w_PBMC_GSE196830/stratified_noncoding33_counts.parquet",
-        "site_tsv":  "/lichaohan/readData/20w_PBMC_GSE196830/site_to_gene_index_stratified_noncoding33_20w_nochr5_18.tsv",
-        "label_csv": "/lichaohan/readData/20w_PBMC_GSE196830/filtered_20w_all_celltype.csv",
+        "parquet":   "/root/project/chaohan/readData/20w_PBMC_GSE196830/stratified_noncoding33_counts.parquet",
+        "site_tsv":  "/root/project/chaohan/readData/20w_PBMC_GSE196830/site_to_gene_index_stratified_noncoding33_20w_nochr5_18.tsv",
+        "label_csv": "/root/project/chaohan/readData/20w_PBMC_GSE196830/filtered_20w_all_celltype.csv",
         "n_class":   29,
     },
     "40w_GSE196830_atac": {
-        "parquet":   "/lichaohan/readData/40w_PBMC_GSE196830/stratified_noncoding33_40w_counts.parquet",
-        "site_tsv":  "/lichaohan/readData/40w_PBMC_GSE196830/site_to_gene_index_stratified_noncoding33_40w.tsv",
-        "label_csv": "/lichaohan/readData/40w_PBMC_GSE196830/filtered_40w_all_celltype.csv",
+        "parquet":   "/root/project/chaohan/readData/40w_PBMC_GSE196830/stratified_noncoding33_40w_counts.parquet",
+        "site_tsv":  "/root/project/chaohan/readData/40w_PBMC_GSE196830/site_to_gene_index_stratified_noncoding33_40w.tsv",
+        "label_csv": "/root/project/chaohan/readData/40w_PBMC_GSE196830/filtered_40w_all_celltype.csv",
         "n_class":   29,
     },
     "80w_GSE196830_atac": {
-        "parquet":   "/lichaohan/readData/80w_PBMC_GSE196830/stratified_noncoding33_80w_counts.parquet",
-        "site_tsv":  "/lichaohan/readData/80w_PBMC_GSE196830/site_to_gene_index_stratified_noncoding33_80w.tsv",
-        "label_csv": "/lichaohan/readData/80w_PBMC_GSE196830/filtered_80w_all_celltype.csv",
+        "parquet":   "/root/project/chaohan/readData/80w_PBMC_GSE196830/stratified_noncoding33_80w_counts.parquet",
+        "site_tsv":  "/root/project/chaohan/readData/80w_PBMC_GSE196830/site_to_gene_index_stratified_noncoding33_80w.tsv",
+        "label_csv": "/root/project/chaohan/readData/80w_PBMC_GSE196830/filtered_80w_all_celltype.csv",
         "n_class":   29,
     },
     "120w_GSE196830_atac": {
-        "parquet":   "/lichaohan/readData/120w_PBMC_GSE196830/stratified_noncoding33_120w_counts.parquet",
-        "site_tsv":  "/lichaohan/readData/120w_PBMC_GSE196830/site_to_gene_index_stratified_noncoding33_120w.tsv",
-        "label_csv": "/lichaohan/readData/120w_PBMC_GSE196830/filtered_120w_all_celltype.csv",
+        "parquet":   "/root/project/chaohan/readData/120w_PBMC_GSE196830/stratified_noncoding33_120w_counts.parquet",
+        "site_tsv":  "/root/project/chaohan/readData/120w_PBMC_GSE196830/site_to_gene_index_stratified_noncoding33_120w.tsv",
+        "label_csv": "/root/project/chaohan/readData/120w_PBMC_GSE196830/filtered_120w_all_celltype.csv",
         "n_class":   29,
     },
     "GSE96583_atac": {
-        "parquet":   "/lichaohan/readData/GSE96583_PBMC/stratified_noncoding33_counts.parquet",
-        "site_tsv":  "/lichaohan/readData/GSE96583_PBMC/site_map.tsv",
-        "label_csv": "/lichaohan/readData/GSE96583_PBMC/filtered_stratified_noncoding33_celltype.csv",
+        "parquet":   "/root/project/chaohan/readData/GSE96583_PBMC/stratified_noncoding33_counts.parquet",
+        "site_tsv":  "/root/project/chaohan/readData/GSE96583_PBMC/site_map.tsv",
+        "label_csv": "/root/project/chaohan/readData/GSE96583_PBMC/filtered_stratified_noncoding33_celltype.csv",
         "n_class":   8,
     },
 }
@@ -250,14 +250,14 @@ def parse_args():
     # PeakVI hyperparameters
     p.add_argument("--n_latent",   type=int,   default=20,
                    help="PeakVI latent dimension (default 20, paper default)")
-    p.add_argument("--n_hidden",   type=int,   default=128)
+    p.add_argument("--n_hidden",   type=int,   default=512)
     p.add_argument("--n_layers",   type=int,   default=2)
     p.add_argument("--max_epochs", type=int,   default=500,
                    help="PeakVI training epochs (default 500; sufficient for convergence "
                         "on large datasets — built-in heuristic gives only 25-50 for "
                         "20w-40w, far from converged). Early stopping will terminate early.")
-    p.add_argument("--batch_size_train", type=int, default=1024,
-                   help="Mini-batch size for PeakVI training (default 1024; up from "
+    p.add_argument("--batch_size_train", type=int, default=512,
+                   help="Mini-batch size for PeakVI training (default 512; up from "
                         "scvi-tools' 128 default for better GPU utilization on large "
                         "ATAC datasets — VAE/Adam with epoch-based KL warmup is robust)")
     p.add_argument("--lr", type=float, default=None,
@@ -272,11 +272,11 @@ def parse_args():
                         "scvi-tools default — tightened to cut wasted tail epochs).")
     # LinearSVC probe hyperparameters (identical to other baselines)
     p.add_argument("--cv_folds",   type=int,   default=5)
-    p.add_argument("--max_samples", type=int,  default=5000)
+    p.add_argument("--max_samples", type=int,  default=0)
     p.add_argument("--pca_dim",    type=int,   default=None,
                    help="PCA before SVC. Default None (n_latent=20 is already compact).")
     p.add_argument("--max_iter",   type=int,   default=2000)
-    p.add_argument("--n_jobs",     type=int,   default=16)
+    p.add_argument("--n_jobs",     type=int,   default=12)
     # Output
     p.add_argument("--output_dir", type=str,
                    default=os.path.join(_PROB_DIR, "outputs_probe"))
@@ -461,6 +461,18 @@ def _quick_probe_f1(z_val: np.ndarray, y_val: np.ndarray, args) -> float:
         z_val = z_val[idx]
         y_val = y_val[idx]
 
+        # The cap can leave rare classes with a single sample, which makes
+        # StratifiedShuffleSplit fail. Re-filter after subsampling.
+        unique, counts = np.unique(y_val, return_counts=True)
+        keep = unique[counts >= 2]
+        if len(keep) < 2:
+            return 0.0
+        if len(keep) < len(unique):
+            mask = np.isin(y_val, keep)
+            z_val = z_val[mask]
+            y_val = y_val[mask]
+            y_val = np.searchsorted(keep, y_val)
+
     try:
         sss = StratifiedShuffleSplit(n_splits=1, test_size=0.3, random_state=args.seed)
         tr_idx, te_idx = next(sss.split(z_val, y_val))
@@ -470,7 +482,7 @@ def _quick_probe_f1(z_val: np.ndarray, y_val: np.ndarray, args) -> float:
     z_tr, z_te = z_val[tr_idx], z_val[te_idx]
     y_tr, y_te = y_val[tr_idx], y_val[te_idx]
 
-    if len(z_tr) > args.max_samples:
+    if args.max_samples and len(z_tr) > args.max_samples:
         rng = np.random.default_rng(args.seed)
         idx = rng.choice(len(z_tr), args.max_samples, replace=False)
         z_tr = z_tr[idx]
@@ -483,7 +495,7 @@ def _quick_probe_f1(z_val: np.ndarray, y_val: np.ndarray, args) -> float:
     ])
     try:
         pipe.fit(z_tr, y_tr)
-        return float(f1_score(pipe.predict(z_te), y_te,
+        return float(f1_score(y_te, pipe.predict(z_te),
                               average="macro", zero_division=0))
     except Exception:
         return 0.0
@@ -760,9 +772,28 @@ def main():
     z_val_final     = model.get_latent_representation(adata_val, give_mean=True)
     cv_result_final = run_svc_cv(z_val_final, y_val, args)
 
+    primary_checkpoint = "best_downstream"
+    if probe_callback.best_f1 <= 0.0:
+        print(
+            "Quick probe never found a positive-F1 checkpoint; "
+            "using final checkpoint as primary result.",
+            flush=True,
+        )
+        primary_checkpoint = "final_fallback"
+        cv_result = cv_result_final
+        z_val = z_val_final
+        z_train = model.get_latent_representation(adata_train, give_mean=True)
+        _z_concat = np.vstack([z_train, z_val])
+        _y_concat = np.concatenate([y_train, y_val])
+        _orig_order = np.argsort(np.concatenate([train_idx, val_idx]))
+        z_all = _z_concat[_orig_order]
+        y_all = _y_concat[_orig_order]
+        del _z_concat, _y_concat, _orig_order
+
     # ── Save results ───────────────────────────────────────────────────
     result = {
-        # Primary result: best-downstream checkpoint
+        # Primary result: best-downstream checkpoint, or final fallback when quick probe fails
+        "primary_checkpoint":     primary_checkpoint,
         "metrics":                cv_result["mean_metrics"],
         "fold_metrics":           cv_result["fold_metrics"],
         "per_class_cv":           cv_result["per_class_cv"],
@@ -782,7 +813,7 @@ def main():
         "elbo_history":           probe_callback.elbo_history,
         "f1_history":             probe_callback.f1_history,
         "args":                   vars(args),
-        "protocol":               "peakvi_train_val_embeddings_5fold_svc_cv_best_ckpt",
+        "protocol":               "peakvi_train_val_embeddings_5fold_svc_cv_best_or_final_fallback",
     }
     with open(os.path.join(out_dir, "probe_metrics.json"), "w") as f:
         json.dump(result, f, indent=2)

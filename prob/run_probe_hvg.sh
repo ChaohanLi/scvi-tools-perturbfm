@@ -36,21 +36,21 @@ GENE_SPACE="hgnc"
 # ─── Run configuration ──────────────────────────────────────────────────────
 RUN_NAME="probe_hvg"
 WANDB_PROJECT="scvi-probe-hvg"
-SYMBOL_MAP="/lichaohan/readData/gene_id_to_symbol.tsv"
+SYMBOL_MAP="/root/project/chaohan/readData/gene_id_to_symbol.tsv"
 N_TOP_GENES=5000          # HVG count; set to 0 to disable HVG selection
 N_LATENT=30
 N_HIDDEN=128
 N_LAYERS=2
 GENE_LIKELIHOOD="nb"
-BATCH_SIZE_TRAIN=1024  # up from scVI's 128 default for better GPU utilization; VAE/Adam + epoch-based KL warmup is robust to this jump
+BATCH_SIZE_TRAIN=512  # up from scVI's 128 default for better GPU utilization; VAE/Adam + epoch-based KL warmup is robust to this jump
 MAX_EPOCHS=500            # 500 epochs upper bound; early stopping exits early on val ELBO plateau
 EARLY_STOPPING="--early_stopping"  # stop early on val ELBO plateau; use "" to disable
 EARLY_STOPPING_PATIENCE=24         # tightened from scvi-tools default of 45 — cuts wasted tail epochs after the plateau
-N_JOBS=16
+N_JOBS=12
 MAX_ITER=2000
 SAVE_EMBEDDINGS="--save_embeddings"   # remove to skip saving .npy files
 
-PYTHON="/lichaohan/miniconda3/envs/scvi/bin/python"
+PYTHON="/root/project/chaohan/.conda/bin/python"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUTPUT_DIR="${SCRIPT_DIR}/outputs_probe"
 

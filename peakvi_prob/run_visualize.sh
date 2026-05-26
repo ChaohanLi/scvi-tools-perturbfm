@@ -9,7 +9,7 @@
 # =============================================================================
 set -euo pipefail
 
-PYTHON="/lichaohan/miniconda3/envs/scvi/bin/python"
+PYTHON="/root/project/chaohan/.conda/bin/python"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ─── Configuration ──────────────────────────────────────────────────────────

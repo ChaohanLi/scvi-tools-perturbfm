@@ -18,16 +18,20 @@ parameters:
 
 # Fixed args passed to every run.
 command:
-  - /lichaohan/miniconda3/envs/scvi/bin/python
+  - /root/project/chaohan/.conda/bin/python
   - ${program}
   - --wandb_project
   - peakvi-probe
   - --max_epochs
   - "500"
+  - --n_hidden
+  - "512"
   - --early_stopping
   - --batch_size_train
-  - "1024"
+  - "512"
   - --n_jobs
-  - "16"
+  - "12"
+  - --max_samples
+  - "0"
   - --save_embeddings
   - ${args}

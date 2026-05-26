@@ -30,17 +30,17 @@ DATASET_ID="5w_GSE196830_atac"
 RUN_NAME="probe"
 WANDB_PROJECT="peakvi-probe"
 N_LATENT=20          # PeakVI default
-N_HIDDEN=128
+N_HIDDEN=512
 N_LAYERS=2
-BATCH_SIZE_TRAIN=1024  # up from scvi-tools 128 default for better GPU utilization on ATAC; VAE/Adam + epoch-based KL warmup is robust to this jump
+BATCH_SIZE_TRAIN=512   # stable default for multi-GPU sweeps on 32GB V100s
 MAX_EPOCHS=500         # 500 epochs: sufficient for convergence + early stopping exits early
 EARLY_STOPPING="--early_stopping"  # monitor val ELBO; use "" to disable
 EARLY_STOPPING_PATIENCE=24  # tightened from scvi-tools default of 50 — cuts wasted tail epochs after the plateau
-N_JOBS=16
+N_JOBS=12
 MAX_ITER=2000
 SAVE_EMBEDDINGS="--save_embeddings"   # set to "--save_embeddings" to also save .npy for visualize.py
 
-PYTHON="/lichaohan/miniconda3/envs/scvi/bin/python"
+PYTHON="/root/project/chaohan/.conda/bin/python"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUTPUT_DIR="${SCRIPT_DIR}/outputs_probe"
 

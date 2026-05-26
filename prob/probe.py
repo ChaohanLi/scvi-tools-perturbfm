@@ -143,38 +143,42 @@ def _stratified_train_val_split(
 # ---------------------------------------------------------------------------
 DATASET_REGISTRY = {
     "5w_symbol":     {
-        "h5ad":       "/lichaohan/readData/5w_allcelltype_anno_symbol.h5ad",
+        "h5ad":       "/root/project/chaohan/readData/5w_allcelltype_anno_symbol.h5ad",
         "gene_space": "ensembl",
     },
     "5w_GSE196830":  {
-        "h5ad":       "/lichaohan/readData/5w_PBMC_GSE196830/5w_allcelltype.h5ad",
+        "h5ad":       "/root/project/chaohan/readData/5w_PBMC_GSE196830/5w_allcelltype.h5ad",
         "gene_space": "hgnc",
     },
     "GSE96583":      {
-        "h5ad":       "/lichaohan/readData/GSE96583_PBMC/GSE96583_merged_dedup.h5ad",
+        "h5ad":       "/root/project/chaohan/readData/GSE96583_PBMC/GSE96583_merged_dedup.h5ad",
         "gene_space": "ensembl",   # var_names are already HGNC symbols
     },
     "10w_GSE196830": {
-        "h5ad":       "/lichaohan/readData/10w_PBMC_GSE196830/10w_allcelltype.h5ad",
+        "h5ad":       "/root/project/chaohan/readData/10w_PBMC_GSE196830/10w_allcelltype.h5ad",
         "gene_space": "hgnc",
     },
     "20w_GSE196830": {
-        "h5ad":       "/lichaohan/readData/20w_PBMC_GSE196830/20w_allcelltype.h5ad",
+        "h5ad":       "/root/project/chaohan/readData/20w_PBMC_GSE196830/20w_allcelltype.h5ad",
         "gene_space": "hgnc",
     },
     "40w_GSE196830": {
-        "h5ad":       "/lichaohan/readData/40w_PBMC_GSE196830/GSE196830_40w_subset.h5ad",
+        "h5ad":       "/root/project/chaohan/readData/40w_PBMC_GSE196830/GSE196830_40w_subset.h5ad",
+        "gene_space": "hgnc",
+    },
+    "80w_GSE196830": {
+        "h5ad":       "/root/project/chaohan/readData/80w_PBMC_GSE196830/GSE196830_80w_subset.h5ad",
         "gene_space": "hgnc",
     },
     "120w_GSE196830": {
-        "h5ad":       "/lichaohan/readData/120w_PBMC_GSE196830/GSE196830_120w_subset.h5ad",
+        "h5ad":       "/root/project/chaohan/readData/120w_PBMC_GSE196830/GSE196830_120w_subset.h5ad",
         "gene_space": "hgnc",
     },
     # scATAC-seq gene-activity baseline: 240k sites aggregated to gene counts
     "5w_GSE196830_atac": {
-        "parquet":      "/lichaohan/readData/5w_PBMC_GSE196830/counts_top12k_stratified_allchr.parquet",
-        "site_to_gene": "/lichaohan/readData/site_to_gene_index_stratified_top12k_bl.tsv",
-        "label_h5ad":   "/lichaohan/readData/5w_PBMC_GSE196830/5w_allcelltype.h5ad",
+        "parquet":      "/root/project/chaohan/readData/5w_PBMC_GSE196830/counts_top12k_stratified_allchr.parquet",
+        "site_to_gene": "/root/project/chaohan/readData/5w_PBMC_GSE196830/site_to_gene_index_stratified_top12k_bl.tsv",
+        "label_h5ad":   "/root/project/chaohan/readData/5w_PBMC_GSE196830/5w_allcelltype.h5ad",
         # var_names are already HGNC symbols after aggregation → skip Ensembl filter
         "gene_space":   "ensembl",
     },
@@ -189,7 +193,7 @@ def parse_args():
         description="Train scVI and evaluate a LinearSVC probe on val embeddings"
     )
     p.add_argument("--h5ad", type=str,
-                   default="/lichaohan/readData/5w_allcelltype_anno_symbol.h5ad")
+                   default="/root/project/chaohan/readData/5w_allcelltype_anno_symbol.h5ad")
     p.add_argument("--dataset_id", type=str, default="5w_symbol",
                    help="Short dataset tag appended to run_name (e.g. 5w_symbol, "
                         "5w_GSE196830, GSE96583, 10w_GSE196830, 20w_GSE196830, 40w_GSE196830)")
@@ -206,8 +210,8 @@ def parse_args():
     p.add_argument("--max_epochs", type=int, default=500,
                    help="scVI training epochs upper bound (default 500; early stopping "
                         "exits early when val ELBO plateaus).")
-    p.add_argument("--batch_size_train", type=int, default=1024,
-                   help="Mini-batch size for scVI training (default 1024; up from "
+    p.add_argument("--batch_size_train", type=int, default=512,
+                   help="Mini-batch size for scVI training (default 512; up from "
                         "scVI's 128 default for better GPU utilization on large "
                         "scRNA datasets — VAE/Adam with epoch-based KL warmup is robust)")
     p.add_argument("--lr", type=float, default=None,
@@ -228,16 +232,16 @@ def parse_args():
                         "'hgnc': map Ensembl IDs → HGNC symbols via symbol_map, "
                         "drop genes without a valid HGNC entry")
     p.add_argument("--symbol_map", type=str,
-                   default="/lichaohan/readData/gene_id_to_symbol.tsv",
+                   default="/root/project/chaohan/readData/gene_id_to_symbol.tsv",
                    help="TSV (gene_id \t gene_symbol) for Ensembl→HGNC mapping. "
                         "Only used when --gene_space hgnc")
     # LinearSVC probe hyperparameters
     p.add_argument("--cv_folds", type=int, default=5)
-    p.add_argument("--max_samples", type=int, default=5000)
+    p.add_argument("--max_samples", type=int, default=0)
     p.add_argument("--pca_dim", type=int, default=None,
                    help="PCA before SVC. Default None = skip (n_latent=30 is already compact).")
     p.add_argument("--max_iter", type=int, default=2000)
-    p.add_argument("--n_jobs", type=int, default=16)
+    p.add_argument("--n_jobs", type=int, default=12)
     # Output
     p.add_argument("--output_dir", type=str,
                    default=os.path.join(_PROB_DIR, "outputs_probe"))
@@ -428,6 +432,18 @@ def _quick_probe_f1(z_val: np.ndarray, y_val: np.ndarray, args) -> float:
         z_val = z_val[idx]
         y_val = y_val[idx]
 
+        # The cap can leave rare classes with a single sample, which makes
+        # StratifiedShuffleSplit fail. Re-filter after subsampling.
+        unique, counts = np.unique(y_val, return_counts=True)
+        keep = unique[counts >= 2]
+        if len(keep) < 2:
+            return 0.0
+        if len(keep) < len(unique):
+            mask = np.isin(y_val, keep)
+            z_val = z_val[mask]
+            y_val = y_val[mask]
+            y_val = np.searchsorted(keep, y_val)
+
     try:
         sss = StratifiedShuffleSplit(n_splits=1, test_size=0.3, random_state=args.seed)
         tr_idx, te_idx = next(sss.split(z_val, y_val))
@@ -437,7 +453,7 @@ def _quick_probe_f1(z_val: np.ndarray, y_val: np.ndarray, args) -> float:
     z_tr, z_te = z_val[tr_idx], z_val[te_idx]
     y_tr, y_te = y_val[tr_idx], y_val[te_idx]
 
-    if len(z_tr) > args.max_samples:
+    if args.max_samples and len(z_tr) > args.max_samples:
         rng = np.random.default_rng(args.seed)
         idx = rng.choice(len(z_tr), args.max_samples, replace=False)
         z_tr = z_tr[idx]
@@ -450,7 +466,7 @@ def _quick_probe_f1(z_val: np.ndarray, y_val: np.ndarray, args) -> float:
     ])
     try:
         pipe.fit(z_tr, y_tr)
-        return float(f1_score(pipe.predict(z_te), y_te,
+        return float(f1_score(y_te, pipe.predict(z_te),
                               average="macro", zero_division=0))
     except Exception:
         return 0.0
@@ -590,6 +606,15 @@ def main():
     for _tok in _sys.argv[1:]:
         if _tok.startswith("--gene_space"):
             _explicit.add("gene_space")
+    # Sweep variants can be written as <dataset_id>__<gene_space>, e.g.
+    # 20w_GSE196830__hgnc. This avoids invalid W&B cartesian products.
+    if "__" in args.dataset_id:
+        base_dataset_id, variant_gene_space = args.dataset_id.rsplit("__", 1)
+        if variant_gene_space in {"ensembl", "hgnc"}:
+            args.dataset_id = base_dataset_id
+            args.gene_space = variant_gene_space
+            _explicit.add("gene_space")
+
     if args.dataset_id in DATASET_REGISTRY:
         cfg = DATASET_REGISTRY[args.dataset_id]
         if "h5ad" in cfg:
@@ -659,6 +684,7 @@ def main():
     bc2idx    = {bc: i for i, bc in enumerate(barcodes)}
     train_idx = np.array([bc2idx[bc] for bc in train_bc])
     val_idx   = np.array([bc2idx[bc] for bc in val_bc])
+    y_val     = labels[val_idx]
 
     adata_train = adata[train_idx].copy()
     adata_val   = adata[val_idx].copy()
@@ -666,7 +692,7 @@ def main():
     print(f"  Classes: {n_class}")
 
     # ── Set up scVI ───────────────────────────────────────────────────
-    # Data is log1p-normalized → use gene_likelihood="normal" (Gaussian).
+    # Data matrices are raw integer counts in the current registry; gene_likelihood="nb" is appropriate.
     # Training is fully unsupervised: no cell-type labels used.
     scvi.settings.num_threads = 4
     SCVI.setup_anndata(adata_train)
@@ -730,7 +756,6 @@ def main():
 
     print("Extracting validation embeddings (best checkpoint)...")
     z_val   = best_model.get_latent_representation(adata_val,   give_mean=True)
-    y_val   = labels[val_idx]
     print(f"  {z_val.shape[1]} dims  |  {len(y_val)} val samples")
 
     print("Extracting training embeddings (best checkpoint)...")
@@ -752,9 +777,23 @@ def main():
     z_val_final     = model.get_latent_representation(adata_val, give_mean=True)
     cv_result_final = run_svc_cv(z_val_final, y_val, args)
 
+    primary_checkpoint = "best_downstream"
+    if probe_callback.best_f1 <= 0.0:
+        print(
+            "Quick probe never found a positive-F1 checkpoint; "
+            "using final checkpoint as primary result.",
+            flush=True,
+        )
+        primary_checkpoint = "final_fallback"
+        cv_result = cv_result_final
+        z_val = z_val_final
+        z_train = model.get_latent_representation(adata_train, give_mean=True)
+        z_all = model.get_latent_representation(adata, give_mean=True)
+
     # ── Save results ──────────────────────────────────────────────────
     result = {
-        # Primary result: best-downstream checkpoint
+        # Primary result: best-downstream checkpoint, or final fallback when quick probe fails
+        "primary_checkpoint":     primary_checkpoint,
         "metrics":                cv_result["mean_metrics"],
         "fold_metrics":           cv_result["fold_metrics"],
         "per_class_cv":           cv_result["per_class_cv"],
@@ -774,7 +813,7 @@ def main():
         "elbo_history":           probe_callback.elbo_history,
         "f1_history":             probe_callback.f1_history,
         "args":                   vars(args),
-        "protocol":               "scvi_train_val_embeddings_5fold_svc_cv_best_ckpt",
+        "protocol":               "scvi_train_val_embeddings_5fold_svc_cv_best_or_final_fallback",
     }
     with open(os.path.join(out_dir, "probe_metrics.json"), "w") as f:
         json.dump(result, f, indent=2)

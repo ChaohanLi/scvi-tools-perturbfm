@@ -8,21 +8,23 @@ metric:
 parameters:
   dataset_id:
     values:
-      - 5w_GSE196830
-      - GSE96583
-      - 10w_GSE196830
-      - 20w_GSE196830
-      - 40w_GSE196830
-      - 120w_GSE196830
-  gene_space:
-    values:
-      - ensembl
-      - hgnc
-
+      - 5w_GSE196830__ensembl
+      - 5w_GSE196830__hgnc
+      - GSE96583__ensembl
+      - 10w_GSE196830__ensembl
+      - 10w_GSE196830__hgnc
+      - 20w_GSE196830__ensembl
+      - 20w_GSE196830__hgnc
+      - 40w_GSE196830__ensembl
+      - 40w_GSE196830__hgnc
+      - 80w_GSE196830__ensembl
+      - 80w_GSE196830__hgnc
+      - 120w_GSE196830__ensembl
+      - 120w_GSE196830__hgnc
 # Fixed args passed to every run.
 # ${args} expands to --dataset_id <value> for each trial.
 command:
-  - /lichaohan/miniconda3/envs/scvi/bin/python
+  - /root/project/chaohan/.conda/bin/python
   - ${program}
   - --wandb_project
   - scvi-probe
@@ -30,8 +32,10 @@ command:
   - "500"
   - --early_stopping
   - --batch_size_train
-  - "1024"
+  - "512"
   - --n_jobs
-  - "16"
+  - "12"
+  - --max_samples
+  - "0"
   - --save_embeddings
   - ${args}

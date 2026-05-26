@@ -39,14 +39,14 @@ tail -f run_probe.log
 
 ```bash
 python probe.py \
-    --h5ad /lichaohan/readData/5w_allcelltype_anno_symbol.h5ad \
+    --h5ad /root/project/chaohan/readData/5w_allcelltype_anno_symbol.h5ad \
     --dataset_id 5w_symbol \
     --run_name my_run \
     --wandb_project scvi-probe
 
 # Raw count dataset (preferred for NB)
 python probe.py \
-    --h5ad /lichaohan/readData/5w_PBMC_GSE196830/5w_allcelltype.h5ad \
+    --h5ad /root/project/chaohan/readData/5w_PBMC_GSE196830/5w_allcelltype.h5ad \
     --dataset_id 5w_GSE196830 \
     --run_name my_run \
     --wandb_project scvi-probe

@@ -90,27 +90,27 @@ def _stratified_train_val_split(
 # ---------------------------------------------------------------------------
 DATASET_REGISTRY = {
     "5w_symbol":     {
-        "h5ad":       "/lichaohan/readData/5w_allcelltype_anno_symbol.h5ad",
+        "h5ad":       "/root/project/chaohan/readData/5w_allcelltype_anno_symbol.h5ad",
         "gene_space": "ensembl",
     },
     "5w_GSE196830":  {
-        "h5ad":       "/lichaohan/readData/5w_PBMC_GSE196830/5w_allcelltype.h5ad",
+        "h5ad":       "/root/project/chaohan/readData/5w_PBMC_GSE196830/5w_allcelltype.h5ad",
         "gene_space": "hgnc",
     },
     "GSE96583":      {
-        "h5ad":       "/lichaohan/readData/GSE96583_PBMC/GSE96583_merged_dedup.h5ad",
+        "h5ad":       "/root/project/chaohan/readData/GSE96583_PBMC/GSE96583_merged_dedup.h5ad",
         "gene_space": "ensembl",
     },
     "10w_GSE196830": {
-        "h5ad":       "/lichaohan/readData/10w_PBMC_GSE196830/10w_allcelltype.h5ad",
+        "h5ad":       "/root/project/chaohan/readData/10w_PBMC_GSE196830/10w_allcelltype.h5ad",
         "gene_space": "hgnc",
     },
     "20w_GSE196830": {
-        "h5ad":       "/lichaohan/readData/20w_PBMC_GSE196830/20w_allcelltype.h5ad",
+        "h5ad":       "/root/project/chaohan/readData/20w_PBMC_GSE196830/20w_allcelltype.h5ad",
         "gene_space": "hgnc",
     },
     "40w_GSE196830": {
-        "h5ad":       "/lichaohan/readData/40w_PBMC_GSE196830/GSE196830_40w_subset.h5ad",
+        "h5ad":       "/root/project/chaohan/readData/40w_PBMC_GSE196830/GSE196830_40w_subset.h5ad",
         "gene_space": "hgnc",
     },
 }
@@ -124,7 +124,7 @@ def parse_args():
         description="Train scVI (HVG-filtered) and evaluate a LinearSVC probe"
     )
     p.add_argument("--h5ad", type=str,
-                   default="/lichaohan/readData/5w_allcelltype_anno_symbol.h5ad")
+                   default="/root/project/chaohan/readData/5w_allcelltype_anno_symbol.h5ad")
     p.add_argument("--dataset_id", type=str, default="5w_symbol")
     p.add_argument("--train_size", type=float, default=0.8)
     p.add_argument("--seed", type=int, default=42)
@@ -156,10 +156,10 @@ def parse_args():
     p.add_argument("--gene_space", type=str, default="ensembl",
                    choices=["ensembl", "hgnc"])
     p.add_argument("--symbol_map", type=str,
-                   default="/lichaohan/readData/gene_id_to_symbol.tsv")
+                   default="/root/project/chaohan/readData/gene_id_to_symbol.tsv")
     # LinearSVC probe hyperparameters
     p.add_argument("--cv_folds", type=int, default=5)
-    p.add_argument("--max_samples", type=int, default=5000)
+    p.add_argument("--max_samples", type=int, default=0)
     p.add_argument("--pca_dim", type=int, default=None)
     p.add_argument("--max_iter", type=int, default=2000)
     p.add_argument("--n_jobs", type=int, default=16)
